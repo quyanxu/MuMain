@@ -85,49 +85,42 @@ bool CmuConsoleDebug::CheckCommand(const std::wstring& strCommand)
         SetShowFpsCounter(true);
         return true;
     }
-
-    if (strCommand.compare(L"$fpscounter off") == 0)
+    else if (strCommand.compare(L"$fpscounter off") == 0)
     {
         SetShowFpsCounter(false);
         return true;
     }
-
-    if (strCommand.compare(L"$details on") == 0)
+    else if (strCommand.compare(L"$details on") == 0)
     {
         SetShowDebugInfo(true);
         return true;
     }
-
-    if (strCommand.compare(L"$details off") == 0)
+    else if (strCommand.compare(L"$details off") == 0)
     {
         SetShowDebugInfo(false);
         return true;
     }
-
-    if (strCommand.compare(0, 4, L"$fps") == 0)
+    else if (strCommand.compare(0, 4, L"$fps") == 0)
     {
         auto fps_str = strCommand.substr(5);
         auto target_fps = std::stof(fps_str);
         SetTargetFps(target_fps);
         return true;
     }
-
-    if (strCommand.compare(L"$vsync on") == 0)
+    else if (strCommand.compare(L"$vsync on") == 0)
     {
         EnableVSync();
         SetTargetFps(-1); // unlimited
         ResetFrameStats();
         return true;
     }
-
-    if (strCommand.compare(L"$vsync off") == 0)
+    else if (strCommand.compare(L"$vsync off") == 0)
     {
         DisableVSync();
         ResetFrameStats();
         return true;
     }
-
-    if (strCommand.compare(0, 7, L"$winmsg") == 0)
+    else if (strCommand.compare(0, 7, L"$winmsg") == 0)
     {
         auto str_limit = strCommand.substr(8);
         auto message_limit = std::stof(str_limit);

@@ -440,6 +440,7 @@ static void RenderFrameGraph(float graphX, float graphY, float graphW, float gra
     float barW = gw / FRAME_HISTORY_SIZE;
     int oldest = (s_frameCount < FRAME_HISTORY_SIZE) ? 0 : s_frameIndex;
 
+    glBegin(GL_QUADS);
     for (int i = 0; i < s_frameCount; i++)
     {
         int idx = (oldest + i) % FRAME_HISTORY_SIZE;
@@ -456,13 +457,12 @@ static void RenderFrameGraph(float graphX, float graphY, float graphW, float gra
             glColor4f(0.9f, 0.2f, 0.2f, 0.8f);
 
         float bx = gx + i * barW;
-        glBegin(GL_QUADS);
         glVertex2f(bx, glBottom);
         glVertex2f(bx + barW, glBottom);
         glVertex2f(bx + barW, glBottom + barH);
         glVertex2f(bx, glBottom + barH);
-        glEnd();
     }
+    glEnd();
 
     glEnable(GL_TEXTURE_2D);
 }
