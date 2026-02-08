@@ -92,6 +92,12 @@ static constexpr int MIN_FRAMES_FOR_STATS = 10;
 static constexpr float GRAPH_MAX_MS = 33.3f;        // graph Y-axis scale (30fps)
 static constexpr float THRESHOLD_60FPS_MS = 16.67f;  // 60 FPS threshold
 static constexpr float THRESHOLD_40FPS_MS = 25.0f;   // 40 FPS threshold
+static constexpr float DEBUG_TEXT_X = 10.0f;          // debug overlay X position
+static constexpr int DEBUG_TEXT_Y_START = 26;         // debug overlay Y start
+static constexpr int DEBUG_TEXT_LINE_HEIGHT = 10;     // line spacing
+static constexpr float DEBUG_GRAPH_WIDTH = 200.0f;    // frame graph width
+static constexpr float DEBUG_GRAPH_HEIGHT = 40.0f;    // frame graph height
+static constexpr float DEBUG_GRAPH_Y_OFFSET = 2.0f;   // gap between text and graph
 
 static float s_frameTimesMs[FRAME_HISTORY_SIZE] = {};
 static int s_frameIndex = 0;
@@ -486,24 +492,24 @@ static void RenderDebugInfo()
     g_pRenderText->SetBgColor(0, 0, 0, 100);
     g_pRenderText->SetTextColor(255, 255, 255, 200);
 
-    int y = 26;
+    int y = DEBUG_TEXT_Y_START;
     swprintf(szLine, L"FPS: %.1f  Avg: %.1f  Max: %.1f  Vsync: %d  CPU: %.1f%%",
         FPS_AVG, s_avgFps, s_highestFps, IsVSyncEnabled(), CPU_AVG);
-    g_pRenderText->RenderText(10, y, szLine); y += 10;
+    g_pRenderText->RenderText((int)DEBUG_TEXT_X, y, szLine); y += DEBUG_TEXT_LINE_HEIGHT;
 
     swprintf(szLine, L"1%% Low: %.1f  Slowest: %.1f  Frame: %.2fms",
         s_onePercentLow, s_slowestFrameFps,
         (s_avgFps > 0.0f) ? 1000.0f / s_avgFps : 0.0f);
-    g_pRenderText->RenderText(10, y, szLine); y += 10;
+    g_pRenderText->RenderText((int)DEBUG_TEXT_X, y, szLine); y += DEBUG_TEXT_LINE_HEIGHT;
 
     swprintf(szLine, L"MousePos: %d %d %d", MouseX, MouseY, MouseLButtonPush);
-    g_pRenderText->RenderText(10, y, szLine); y += 10;
+    g_pRenderText->RenderText((int)DEBUG_TEXT_X, y, szLine); y += DEBUG_TEXT_LINE_HEIGHT;
 
     swprintf(szLine, L"Camera3D: %.1f %.1f:%.1f:%.1f", CameraFOV, CameraAngle[0], CameraAngle[1], CameraAngle[2]);
-    g_pRenderText->RenderText(10, y, szLine); y += 10;
+    g_pRenderText->RenderText((int)DEBUG_TEXT_X, y, szLine); y += DEBUG_TEXT_LINE_HEIGHT;
 
     // Frame time graph below text
-    RenderFrameGraph(10.0f, (float)(y + 2), 200.0f, 40.0f);
+    RenderFrameGraph(DEBUG_TEXT_X, (float)y + DEBUG_GRAPH_Y_OFFSET, DEBUG_GRAPH_WIDTH, DEBUG_GRAPH_HEIGHT);
 
     g_pRenderText->SetFont(g_hFont);
     EndBitmap();
@@ -525,7 +531,7 @@ static void RenderFpsCounter()
     g_pRenderText->SetTextColor(255, 255, 255, 200);
 
     swprintf(szLine, L"FPS: %.1f", FPS_AVG);
-    g_pRenderText->RenderText(10, 26, szLine);
+    g_pRenderText->RenderText((int)DEBUG_TEXT_X, DEBUG_TEXT_Y_START, szLine);
 
     g_pRenderText->SetFont(g_hFont);
     EndBitmap();
