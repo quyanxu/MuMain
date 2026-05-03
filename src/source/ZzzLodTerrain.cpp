@@ -2160,7 +2160,13 @@ static void ExpandHullOutward(float offset)
 void CreateFrustrum2D(vec3_t Position)
 {
     CameraMode currentMode = CameraManager::Instance().GetCurrentMode();
-    if (currentMode == CameraMode::Orbital
+    // Default joins the Orbital natural-hull path so the cull hull is built
+    // from the actual GL modelview / FOV / aspect instead of the legacy
+    // hardcoded trapezoid table (which was tuned for 4:3 and left the upper
+    // screen corners uncovered on widescreen). The DevEditor near/far
+    // trapezoid multipliers still apply, just on view-space halfW/nearHalfW.
+    if (currentMode == CameraMode::Default
+        || currentMode == CameraMode::Orbital
 #ifdef _EDITOR
         || currentMode == CameraMode::FreeFly
 #endif
@@ -2222,9 +2228,11 @@ void CreateFrustrum2D(vec3_t Position)
             // view-aligned trapezoid. Corners are in camera-local coordinates
             // (forward = view -Z, lateral = view X) and transformed by the camera
             // matrix, so the shape tracks yaw AND pitch — it follows exactly what
-            // the camera is looking at for any angle.
+            // the camera is looking at for any angle. Orbital-only — Default
+            // joins this path too but uses its own near/far multipliers.
             float ovFarDist = 0, ovFarW = 0, ovNearDist = 0, ovNearW = 0;
-            if (DevEditor_GetOrbitalHullTrapezoid(&ovFarDist, &ovFarW, &ovNearDist, &ovNearW))
+            if (currentMode == CameraMode::Orbital
+                && DevEditor_GetOrbitalHullTrapezoid(&ovFarDist, &ovFarW, &ovNearDist, &ovNearW))
             {
                 const float farHalf  = ovFarW  * 0.5f;
                 const float nearHalf = ovNearW * 0.5f;
@@ -2271,7 +2279,22 @@ void CreateFrustrum2D(vec3_t Position)
             // making static 3D objects anchored to those tiles pop in/out of view.
             // 400 world units (= 800 total width) covers the footprint reliably.
             constexpr float NATURAL_NEAR_HALF_WIDTH = 400.0f;
-            const float nearHalfW = NATURAL_NEAR_HALF_WIDTH;
+            float nearHalfW = NATURAL_NEAR_HALF_WIDTH;
+
+#ifdef _EDITOR
+            // DevEditor's Default-camera trapezoid sliders multiply the near
+            // and far widths. The legacy path applied them at the very end;
+            // do the same here so the sliders still affect Default's hull
+            // after the path migration.
+            if (currentMode == CameraMode::Default)
+            {
+                float nearMul = 1.0f, farMul = 1.0f;
+                DevEditor_GetDefaultTrapezoidMultipliers(&nearMul, &farMul);
+                halfW     *= farMul;
+                nearHalfW *= nearMul;
+            }
+#endif
+
             const float nearHalfH = nearHalfW / aspect;
 
             vec3_t viewPts[8];

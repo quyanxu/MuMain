@@ -17,32 +17,28 @@ extern float g_fSpecialHeight;
 namespace
 {
     bool s_bF9KeyPressed  = false;  // F9  — cycle camera mode
-    bool s_bF10KeyPressed = false;  // F10 — toggle zoom lock
     bool s_bF11KeyPressed = false;  // F11 — reset active view
 }
 
 /**
- * @brief Handles the camera-related function keys (F9, F10, F11).
+ * @brief Handles the camera-related function keys (F9, F11).
  *
  * Lives at this layer so the bindings work the same regardless of which
- * camera is active: F10/F11 dispatch into CameraManager, which forwards
- * F11 to the active camera's ResetView().
+ * camera is active. F10 (zoom lock) is handled directly in Winmain's
+ * WM_SYSKEYDOWN case because Windows reserves F10 as a system key and
+ * polling GetAsyncKeyState was racing with focus/loading frames.
  */
 static void HandleCameraHotkeys()
 {
     const bool bF9Down  = (GetAsyncKeyState(VK_F9)  & 0x8000) != 0;
-    const bool bF10Down = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
     const bool bF11Down = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
 
     if (bF9Down && !s_bF9KeyPressed)
         CameraManager::Instance().CycleToNextMode();
-    if (bF10Down && !s_bF10KeyPressed)
-        CameraManager::Instance().ToggleZoomLock();
     if (bF11Down && !s_bF11KeyPressed)
         CameraManager::Instance().ResetActiveView();
 
     s_bF9KeyPressed  = bF9Down;
-    s_bF10KeyPressed = bF10Down;
     s_bF11KeyPressed = bF11Down;
 }
 
