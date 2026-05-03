@@ -48,6 +48,21 @@ While FreeFly is active, the gameplay camera continues running in the
 background (the "spectated camera" tracked by `CameraManager`) - toggling back
 puts you exactly where the gameplay camera now is, not where you left off.
 
+The standard in-game hotkeys still work with the editor open:
+
+- **F9** cycles Default ↔ Orbital.
+- **F10** toggles the zoom lock. F10 is intercepted at the Win32 message
+  layer (`WM_SYSKEYDOWN`) so it fires reliably even when ImGui has
+  keyboard focus.
+- **F11** resets the active camera (zoom rung for Default, rotation +
+  zoom for Orbital).
+
+While FreeFly is active and spectating a gameplay camera, the cone
+wireframe is augmented with two ground lines: a **red** line where the
+bottom of the spectated view hits the terrain and a **yellow** line where
+the top hits it. They terminate at the cone's apex→corner edges, so they
+visualise the camera's actual visible extent on the ground.
+
 #### Summary line
 Shows real-time camera position (world coords + tile coords) and pitch / yaw.
 Useful when placing fixed camera shots or noting positions for screenshots.
@@ -72,7 +87,7 @@ to the factory config on restart.
 |---------|-----------------|-------------------|
 | **Far Plane** (~0.5m to 20km) | Grows or shrinks the visible far clip - also drives 3D object cull range. | Checking how much the game can render before fog/cull cuts in; tuning visibility for screenshots. |
 | **Camera Offset X / Y / Z** | Hero-relative. Shifts the camera's eye point relative to the hero anchor. | Repositioning the third-person rig (e.g. higher angle, off-shoulder). |
-| **2D Culling Trapezoid Width - near / far multipliers** | Scales the hardcoded ground trapezoid the Default camera uses for terrain culling. | Tightening the trapezoid to see culling pop, or widening it to confirm tiles render. |
+| **2D Culling Trapezoid Width - near / far multipliers** | Scales the Default camera's view-space ground trapezoid (near and far half-widths). The trapezoid itself is now derived from the live GL projection (FOV/aspect), so 16:9 corners stay covered without the legacy 4:3 fudge. | Tightening to see culling pop, or widening to confirm tiles render - useful when chasing edge-case clipping at corners. |
 | **Fog override** checkbox | Gates the next three controls. Off = camera config's fog wins. | Toggle while comparing current vs. tuned fog. |
 | **Fog On / Off** | Enables/disables OpenGL fog. | Quick A/B for "is this fog or culling cutting things off?" |
 | **Fog Start / End** (% of ViewFar) | Sets the fog density ramp as a fraction of the current far plane. | Pulling fog in to mask LOD pop, or pushing it out for cleaner long-range shots. |
