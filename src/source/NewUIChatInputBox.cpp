@@ -264,7 +264,7 @@ bool SEASON3B::CNewUIChatInputBox::UpdateMouseEvent()
 
     auto const releaseMouse = SEASON3B::IsRelease(VK_LBUTTON);
 
-    if (SelectedCharacter >= 0 && (IsVisible() && releaseMouse))
+    if (SelectedCharacter >= 0 && IsVisible() && SEASON3B::IsRelease(VK_RBUTTON))
     {
         auto const character = &CharactersClient[SelectedCharacter];
 
