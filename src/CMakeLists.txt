@@ -2,6 +2,11 @@ cmake_minimum_required(VERSION 3.25)
 
 project(MuMain)
 
+# Repository root (parent of this src/ directory). Defined here so all
+# sibling-directory references (cmake/, ClientLibrary/, etc.) have a
+# single, stable anchor instead of scattered "../" navigations.
+cmake_path(GET CMAKE_CURRENT_SOURCE_DIR PARENT_PATH REPO_ROOT)
+
 # Initialize imgui submodule automatically if missing
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/imgui/imgui.cpp")
   find_package(Git QUIET)
@@ -10,9 +15,6 @@ if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/imgui/imgui.cpp")
   endif()
 
   message(STATUS "Initializing imgui submodule...")
-
-  # Get repository root (parent of src/)
-  cmake_path(GET CMAKE_CURRENT_SOURCE_DIR PARENT_PATH REPO_ROOT)
 
   # If directory exists but is incomplete, remove it first
   if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty/imgui")
@@ -193,6 +195,18 @@ add_custom_command(
 )
 add_custom_target(CopyAssets DEPENDS "${ASSETS_STAMP}")
 add_dependencies(Main CopyAssets)
+
+# Seed config.ini from the template only when it doesn't already exist
+# next to the executable. The bulk asset copy ships config.ini.template
+# into the build dir on every build; this step turns it into config.ini
+# the first time and then leaves the user's edited copy alone forever.
+add_custom_command(TARGET Main POST_BUILD
+  COMMAND "${CMAKE_COMMAND}"
+    "-DINPUT=${ASSETS_DIR}/config.ini.template"
+    "-DOUTPUT=$<TARGET_FILE_DIR:Main>/config.ini"
+    "-P" "${REPO_ROOT}/cmake/SeedConfigIfMissing.cmake"
+  VERBATIM
+)
 
 # Skeleton Linux-native linkage. This intentionally depends only on
 # ubiquitous system libraries so we can focus on getting the project to
