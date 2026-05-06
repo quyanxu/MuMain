@@ -51,7 +51,15 @@ namespace
         g_CurrentPath  = path;
 
         // Match the legacy wzAudioPlay(name, 1) semantics: play once.
-        return MIX_PlayTrack(g_MusicTrack, 0);
+        // On failure, clear g_CurrentPath so a subsequent PlayMp3 with the
+        // same name doesn't early-return on the "already playing" check
+        // and is allowed to retry.
+        if (!MIX_PlayTrack(g_MusicTrack, 0))
+        {
+            g_CurrentPath.clear();
+            return false;
+        }
+        return true;
     }
 }
 
@@ -101,13 +109,18 @@ namespace AudioPlayer
 
     void Shutdown()
     {
-        ReleaseCurrentAudio();
-
+        // Order matters: the track holds a pointer to g_CurrentAudio, so the
+        // track must be destroyed before its audio (otherwise we leave the
+        // track briefly pointed at freed memory).  The mixer goes last since
+        // both the track and the audio were created against it.
         if (g_MusicTrack)
         {
             MIX_DestroyTrack(g_MusicTrack);
             g_MusicTrack = nullptr;
         }
+
+        ReleaseCurrentAudio();
+
         if (g_Mixer)
         {
             MIX_DestroyMixer(g_Mixer);
@@ -149,6 +162,9 @@ void StopMp3(const char* Name, BOOL bEnforce)
     if (std::strcmp(Name, g_CurrentPath.c_str()) == 0)
     {
         MIX_StopTrack(g_MusicTrack, 0);
+        // Unbind before releasing: the track keeps a pointer to the audio
+        // even when stopped, and ReleaseCurrentAudio destroys it.
+        MIX_SetTrackAudio(g_MusicTrack, nullptr);
         ReleaseCurrentAudio();
     }
 }
