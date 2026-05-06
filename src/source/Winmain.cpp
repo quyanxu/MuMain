@@ -113,7 +113,7 @@ int g_iScreenSaverOldValue = 60 * 15;
 BOOL g_bUseWindowMode = TRUE;
 BOOL g_bUseFullscreenMode = FALSE;
 
-#include "AudioPlayer.h"
+#include "Audio/AudioPlayer.h"
 
 extern int  LogIn;
 extern wchar_t LogInID[];

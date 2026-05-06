@@ -1,5 +1,5 @@
 #include "stdafx.h"
-#include "AudioPlayer.h"
+#include "Audio/AudioPlayer.h"
 
 #include "GameConfig/GameConfig.h"
 #include "Winmain.h"
