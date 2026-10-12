@@ -52,7 +52,39 @@ cmake --build build-linux -j"$(nproc)"
 
 This builds the engine, the `linux-x64` `MUnique.Client.Library.so`, and copies
 the assets and the library next to the executable. Drop `-DENABLE_EDITOR=ON`
-(or set it `OFF`) for a player build.
+(or set it `OFF`) for a player build. Add `-DENABLE_CONTROL_SOCKET=ON` when
+test scripts need to drive the client (see `docs/control-socket.md`); it is
+`OFF` by default and must stay off in anything handed to players.
+
+### Using the presets
+
+`CMakePresets.json` carries the same two configurations, with a
+`Ninja Multi-Config` generator and `CMAKE_EXPORT_COMPILE_COMMANDS=ON`:
+
+```bash
+# Configure (pick one)
+cmake --preset linux-x64                  # player build: ENABLE_EDITOR=OFF, ENABLE_CONTROL_SOCKET=OFF
+cmake --preset linux-x64-mueditor         # developer build: ENABLE_EDITOR=ON, ENABLE_CONTROL_SOCKET=ON
+
+# Build (pick the matching Debug/Release build preset)
+cmake --build --preset linux-x64-mueditor-debug
+cmake --build --preset linux-x64-mueditor-release
+```
+
+Each preset builds into `out/build/<preset-name>/`, so the two configurations
+never share a build tree. The plain preset is the player configuration: it
+contains neither the editor nor the control socket, and the `control_socket_leak`
+test in its test suite proves the latter. To get the socket without the editor,
+configure by hand: `cmake --preset linux-x64 -DENABLE_CONTROL_SOCKET=ON`.
+
+Because `src/MuEditor/` is only added to the target when `ENABLE_EDITOR=ON`, the
+`linux-x64` compile database contains no editor translation units and clangd
+cannot index them. Configuring `linux-x64-mueditor` once produces an
+`out/build/linux-x64-mueditor/compile_commands.json` that covers both the client
+and the editor (and the control socket, which is also only compiled when
+enabled); point your editor's clangd at it with
+`--compile-commands-dir=out/build/linux-x64-mueditor`. Configuring is enough for
+indexing — you do not have to build that tree.
 
 If the packaged runtime has no global library path for SDL's video backends or the Vulkan loader (the client stops with `SDL video init failed` and an SDL error such as `wayland not available`), configure with `-DMU_LINK_SDL_PLATFORM_BACKENDS=ON`: SDL then links those libraries at build time and `Main` records their `RUNPATH`.
 
@@ -67,6 +99,8 @@ Run from `build-linux/src` so the client finds its assets, `config.ini`, and
 `MUnique.Client.Library.so` (loaded from the working directory). Set the server
 in `config.ini` (`ServerIP` / `ServerPort`).
 
+SDL diagnostics are also written to `MuError.log`; set `SDL_LOGGING` to control their verbosity.
+
 ### Hardware OpenGL under WSLg
 
 If you build inside WSL, the default GL driver is Mesa software rendering
@@ -76,6 +110,18 @@ acceleration:
 ```bash
 MESA_LOADER_DRIVER_OVERRIDE=d3d12 ./Main
 ```
+
+### Wayland
+
+Wayland compositors decide where windows go, so changing the resolution in
+windowed mode resizes the client but does not re-center it: drag it where you
+want it, or restart the client. The resolution is already saved when you apply
+it, and the compositor places the new window. On COSMIC the window can also snap
+back to the previous size after you switch to another window; that is an SDL
+bug tracked in [#607](https://github.com/sven-n/MuMain/issues/607), and the
+same restart works around it. If you toggled windowed/fullscreen after the
+snap-back, select the resolution again before restarting: the toggle saves the
+reverted size.
 
 ## Reporting a Wayland problem
 

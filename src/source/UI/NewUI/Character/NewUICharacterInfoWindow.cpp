@@ -18,6 +18,7 @@
 #include "UI/Legacy/UIManager.h"
 #include "Network/Server/ServerListManager.h"
 #include "I18N/All.h"
+#include "GameLogic/Items/ItemCategories.h"
 
 using namespace SEASON3B;
 
@@ -168,16 +169,7 @@ bool SEASON3B::CNewUICharacterInfoWindow::BtnProcess()
 
     if (CharacterAttribute->LevelUpPoint > 0)
     {
-        int iBaseClass = gCharacterManager.GetBaseClass(Hero->Class);
-        int iCount = 0;
-        if (iBaseClass == CLASS_DARK_LORD)
-        {
-            iCount = 5;
-        }
-        else
-        {
-            iCount = 4;
-        }
+        const int iCount = StatButtonCount();
         for (int i = 0; i < iCount; ++i)
         {
             if (m_BtnStat[i].UpdateMouseEvent() == true)
@@ -346,13 +338,13 @@ void SEASON3B::CNewUICharacterInfoWindow::RenderTableTexts()
 
         iMaxMinus = -CharacterAttribute->wMaxMinusPoint;
 
-        mu_swprintf(strPoint, L"%ls %d/%d | %ls %d/%d",
-            I18N::Game::Create, CharacterAttribute->AddPoint, CharacterAttribute->MaxAddPoint,
-            I18N::Game::Decrease, iMinus, iMaxMinus);
+        mu_swprintf(strPoint, L"%ls %d/%d | %ls %d/%d", I18N::Game::StatPointsAdded, CharacterAttribute->AddPoint,
+                    CharacterAttribute->MaxAddPoint, I18N::Game::StatPointsRemoved, iMinus, iMaxMinus);
     }
     else
     {
-        mu_swprintf(strPoint, L"%ls %d/%d | %ls %d/%d", I18N::Game::Create, 0, 0, I18N::Game::Decrease, 0, 0);
+        mu_swprintf(strPoint, L"%ls %d/%d | %ls %d/%d", I18N::Game::StatPointsAdded, 0, 0,
+                    I18N::Game::StatPointsRemoved, 0, 0);
     }
 
     g_pRenderText->SetFont(g_hFontBold);
@@ -1334,14 +1326,10 @@ void SEASON3B::CNewUICharacterInfoWindow::RenderAttribute()
             iMagicDamageMax += nTemp / 4 * fTemp;
         }
 
-        if ((pWeaponRight->Type >= MODEL_STAFF - MODEL_ITEM
-            && pWeaponRight->Type < (MODEL_STAFF + MAX_ITEM_INDEX - MODEL_ITEM))
-            || pWeaponRight->Type == (static_cast<int>(MODEL_RUNE_BLADE) - MODEL_ITEM)
-            || pWeaponRight->Type == (static_cast<int>(MODEL_EXPLOSION_BLADE) - MODEL_ITEM)
-            || pWeaponRight->Type == (static_cast<int>(MODEL_SWORD_DANCER) - MODEL_ITEM)
-            || pWeaponRight->Type == (static_cast<int>(MODEL_DARK_REIGN_BLADE) - MODEL_ITEM)
-            || pWeaponRight->Type == (static_cast<int>(MODEL_IMPERIAL_SWORD) - MODEL_ITEM)
-            )
+        if ((pWeaponRight->Type >= ITEM_STAFF && pWeaponRight->Type < (ITEM_STAFF + MAX_ITEM_INDEX)) ||
+            pWeaponRight->Type == ITEM_RUNE_BLADE || pWeaponRight->Type == ITEM_EXPLOSION_BLADE ||
+            pWeaponRight->Type == ITEM_SWORD_DANCER || pWeaponRight->Type == ITEM_DARK_REIGN_BLADE ||
+            pWeaponRight->Type == ITEM_IMPERIAL_SWORD)
         {
             float magicPercent = (float)(pWeaponRight->MagicPower) / 100;
 
@@ -1442,7 +1430,7 @@ void SEASON3B::CNewUICharacterInfoWindow::RenderAttribute()
             }
         }
 
-        if (ITEM_BOOK_OF_SAHAMUTT <= pWeaponLeft->Type && pWeaponLeft->Type <= ITEM_STAFF + 29)
+        if (GameLogic::Items::IsSummonerBook(pWeaponLeft))
         {
             float fCursePercent = (float)(pWeaponLeft->MagicPower) / 100;
 
@@ -1527,16 +1515,7 @@ void SEASON3B::CNewUICharacterInfoWindow::RenderAttribute()
 
 void SEASON3B::CNewUICharacterInfoWindow::RenderButtons()
 {
-    int iBaseClass = gCharacterManager.GetBaseClass(Hero->Class);
-    int iCount = 0;
-    if (iBaseClass == CLASS_DARK_LORD)
-    {
-        iCount = 5;
-    }
-    else
-    {
-        iCount = 4;
-    }
+    const int iCount = StatButtonCount();
 
     if (CharacterAttribute->LevelUpPoint > 0)
     {
@@ -1656,4 +1635,20 @@ void SEASON3B::CNewUICharacterInfoWindow::ResetEquipmentLevel()
     Hero->BodyPart[BODYPART_BOOTS].Level = pItem[EQUIPMENT_BOOTS].Level;
 
     CheckFullSet(Hero);
+}
+
+SEASON3B::CNewUIButton* SEASON3B::CNewUICharacterInfoWindow::GetShownStatButton(int stat)
+{
+    if (!IsVisible() || CharacterAttribute->LevelUpPoint <= 0 || stat < 0)
+    {
+        return nullptr;
+    }
+
+    return stat < StatButtonCount() ? &m_BtnStat[stat] : nullptr;
+}
+
+int SEASON3B::CNewUICharacterInfoWindow::StatButtonCount() const
+{
+    // Command is a Dark Lord's stat only.
+    return gCharacterManager.GetBaseClass(Hero->Class) == CLASS_DARK_LORD ? 5 : 4;
 }

@@ -8,6 +8,8 @@
 #include "WSclient.h"
 #include "UI/Legacy/UIControls.h"
 #include "Character/CharacterManager.h"
+#include "GameLogic/Items/ItemCategories.h"
+#include "Data/GameData/ItemData/ItemModelSlots.h"
 
 using namespace SEASON4A;
 
@@ -33,7 +35,7 @@ BOOL CSocketItemMgr::IsSocketItem(const ITEM* pItem)
 
 BOOL CSocketItemMgr::IsSocketItem(const OBJECT* pObject)
 {
-    return IsSocketItem(pObject->Type - MODEL_SWORD);
+    return IsSocketItem(Data::Items::ToItemType(pObject->Type));
 }
 
 BOOL CSocketItemMgr::IsSocketItem(int iItemType)
@@ -81,7 +83,7 @@ int CSocketItemMgr::GetSeedShpereSeedID(const ITEM* pItem)
 {
     BYTE bySocketSeedID = SOCKET_EMPTY;
 
-    if (pItem->Type >= ITEM_SEED_SPHERE_FIRE_1 && pItem->Type <= ITEM_SEED_SPHERE_EARTH_5)
+    if (GameLogic::Items::IsSocketSeedSphere(pItem))
     {
         int iCategoryIndex = (pItem->Type - (ITEM_SEED_SPHERE_FIRE_1)) % 6 + 1;
         int iLevel = pItem->Level;
@@ -278,7 +280,7 @@ int CSocketItemMgr::AttachToolTipForSeedSphereItem(const ITEM* pItem, int iTextN
 {
     SOCKET_OPTION_INFO* pInfo = NULL;
 
-    if (pItem->Type >= ITEM_SEED_FIRE && pItem->Type <= ITEM_SEED_EARTH)
+    if (GameLogic::Items::IsSocketSeed(pItem))
     {
         int iCategoryIndex = pItem->Type - (ITEM_SEED_FIRE) + 1;
         mu_swprintf(TextList[iTextNum], I18N::Game::ElementS, I18N::Game::Lookup(2640 + iCategoryIndex - 1));
@@ -317,7 +319,7 @@ int CSocketItemMgr::AttachToolTipForSeedSphereItem(const ITEM* pItem, int iTextN
         TextBold[iTextNum] = false;
         ++iTextNum;
     }
-    else if (pItem->Type >= ITEM_SPHERE_MONO && pItem->Type <= ITEM_SPHERE_5)
+    else if (GameLogic::Items::IsSocketSphere(pItem))
     {
         int iSphereLevel = pItem->Type - (ITEM_SPHERE_MONO) + 1;
         mu_swprintf(TextList[iTextNum], I18N::Game::LevelD, iSphereLevel);
@@ -325,7 +327,7 @@ int CSocketItemMgr::AttachToolTipForSeedSphereItem(const ITEM* pItem, int iTextN
         TextBold[iTextNum] = false;
         ++iTextNum;
     }
-    else if (pItem->Type >= ITEM_SEED_SPHERE_FIRE_1 && pItem->Type <= ITEM_SEED_SPHERE_EARTH_5)
+    else if (GameLogic::Items::IsSocketSeedSphere(pItem))
     {
         int iCategoryIndex = (pItem->Type - (ITEM_SEED_SPHERE_FIRE_1)) % 6 + 1;
         mu_swprintf(TextList[iTextNum], I18N::Game::ElementS, I18N::Game::Lookup(2640 + iCategoryIndex - 1));

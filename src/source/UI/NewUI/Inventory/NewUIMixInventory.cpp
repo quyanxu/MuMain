@@ -4,6 +4,7 @@
 
 #include "stdafx.h"
 #include "UI/NewUI/Inventory/NewUIMixInventory.h"
+#include "UI/NewUI/Inventory/HeldItemPlacement.h"
 #include "UI/NewUI/NewUISystem.h"
 #include "UI/NewUI/Dialogs/NewUICustomMessageBox.h"
 #include "GameLogic/Items/MixMgr.h"
@@ -15,6 +16,7 @@
 #include "Engine/Object/ZzzInfomation.h"
 #include "Engine/Object/ZzzCharacter.h"
 #include "I18N/All.h"
+#include "Core/Text/WideFormat.h"
 
 #include "Audio/DSPlaySound.h"
 #include "Network/Server/SocketSystem.h"
@@ -460,7 +462,7 @@ void CNewUIMixInventory::RenderFrame()
             g_pRenderText->SetTextColor(255, 255, 48, 255);
             g_pRenderText->SetBgColor(40, 40, 40, 128);
             mu_swprintf(szText, I18N::Game::SSuccessRateD, I18N::Game::Combining, g_MixRecipeMgr.GetSuccessRate());
-            mu_swprintf(szText, L"%ls + %d%%", szText, g_MixRecipeMgr.GetPlusChaosRate());
+            Core::Text::AppendFormatted(szText, L" + %d%%", g_MixRecipeMgr.GetPlusChaosRate());
             g_pRenderText->RenderText(fPos_x, fPos_y + fLine_y, szText);
             g_pRenderText->SetTextColor(210, 230, 255, 255);
         }
@@ -478,13 +480,16 @@ void CNewUIMixInventory::RenderFrame()
                 mu_swprintf(szText, I18N::Game::SSuccessRateD, I18N::Game::Combining, g_MixRecipeMgr.GetSuccessRate());
                 break;
             case SEASON3A::MIXTYPE_TRAINER:
-                mu_swprintf(szText, I18N::Game::SSuccessRateD, I18N::Game::Resurrection, g_MixRecipeMgr.GetSuccessRate());
+                mu_swprintf(szText, I18N::Game::SSuccessRateD, I18N::Game::OperationResurrecting,
+                            g_MixRecipeMgr.GetSuccessRate());
                 break;
             case SEASON3A::MIXTYPE_OSBOURNE:
-                mu_swprintf(szText, I18N::Game::SSuccessRateD, I18N::Game::Refine, g_MixRecipeMgr.GetSuccessRate());
+                mu_swprintf(szText, I18N::Game::SSuccessRateD, I18N::Game::OperationRefining,
+                            g_MixRecipeMgr.GetSuccessRate());
                 break;
             case SEASON3A::MIXTYPE_ELPIS:
-                mu_swprintf(szText, I18N::Game::SSuccessRateD, I18N::Game::Refine, g_MixRecipeMgr.GetSuccessRate());
+                mu_swprintf(szText, I18N::Game::SSuccessRateD, I18N::Game::OperationRefining,
+                            g_MixRecipeMgr.GetSuccessRate());
                 break;
             }
             g_pRenderText->RenderText(fPos_x, fPos_y + fLine_y, szText);
@@ -695,7 +700,7 @@ void CNewUIMixInventory::RenderMixDescriptions(float fPos_x, float fPos_y)
         g_pRenderText->RenderText(fPos_x, fPos_y + 250 + 0 * 13, szText, 160.0f, 0, RT3_SORT_CENTER);
         mu_swprintf(szText, I18N::Game::TheRefiningStone);
         g_pRenderText->RenderText(fPos_x, fPos_y + 250 + 1 * 13, szText, 160.0f, 0, RT3_SORT_CENTER);
-        mu_swprintf(szText, I18N::Game::SForOnlyS, I18N::Game::Refine, I18N::Game::WeaponsOrShields);
+        mu_swprintf(szText, I18N::Game::SForOnlyS, I18N::Game::OperationRefining, I18N::Game::WeaponsOrShields);
         g_pRenderText->RenderText(fPos_x, fPos_y + 250 + 2 * 13, szText, 160.0f, 0, RT3_SORT_CENTER);
         mu_swprintf(szText, I18N::Game::Allowed);
         g_pRenderText->RenderText(fPos_x, fPos_y + 250 + 3 * 13, szText, 160.0f, 0, RT3_SORT_CENTER);
@@ -909,69 +914,30 @@ bool CNewUIMixInventory::Mix()
 bool CNewUIMixInventory::InventoryProcess()
 {
     CNewUIPickedItem* pPickedItem = CNewUIInventoryCtrl::GetPickedItem();
+    if (m_pNewInventoryCtrl == nullptr || pPickedItem == nullptr)
+        return false;
 
-    if (m_pNewInventoryCtrl && pPickedItem)
+    if (!AcceptsHeldItem(pPickedItem))
     {
-        const auto iCurInventory = g_MixRecipeMgr.GetMixInventoryEquipmentIndex();
-
-        ITEM* pItemObj = pPickedItem->GetItem();
-        if (GetMixState() == MIX_READY && g_MixRecipeMgr.IsMixSource(pPickedItem->GetItem()) &&
-            pPickedItem->GetOwnerInventory() == g_pMyInventory->GetInventoryCtrl())
-        {
-            m_pNewInventoryCtrl->SetSquareColorNormal(m_fInventoryColor[0], m_fInventoryColor[1], m_fInventoryColor[2]);
-            if (SEASON3B::IsPress(VK_LBUTTON))
-            {
-                int iSourceIndex = pPickedItem->GetSourceLinealPos();
-                int iTargetIndex = pPickedItem->GetTargetLinealPos(m_pNewInventoryCtrl);
-                if (iTargetIndex != -1 && m_pNewInventoryCtrl->CanMove(iTargetIndex, pItemObj))
-                {
-                    if (SendRequestEquipmentItem(STORAGE_TYPE::INVENTORY, iSourceIndex,
-                        pItemObj, iCurInventory, iTargetIndex))
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        else if (pPickedItem->GetOwnerInventory() == m_pNewInventoryCtrl)
-        {
-            m_pNewInventoryCtrl->SetSquareColorNormal(m_fInventoryColor[0], m_fInventoryColor[1], m_fInventoryColor[2]);
-            if (SEASON3B::IsPress(VK_LBUTTON))
-            {
-                int iSourceIndex = pPickedItem->GetSourceLinealPos();
-                int iTargetIndex = pPickedItem->GetTargetLinealPos(m_pNewInventoryCtrl);
-                if (iTargetIndex != -1 && m_pNewInventoryCtrl->CanMove(iTargetIndex, pItemObj))
-                {
-                    if (SendRequestEquipmentItem(iCurInventory, iSourceIndex,
-                        pItemObj, iCurInventory, iTargetIndex))
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        else if (GetMixState() == MIX_READY && g_MixRecipeMgr.IsMixSource(pPickedItem->GetItem()) &&
-            pItemObj->ex_src_type == ITEM_EX_SRC_EQUIPMENT)
-        {
-            m_pNewInventoryCtrl->SetSquareColorNormal(m_fInventoryColor[0], m_fInventoryColor[1], m_fInventoryColor[2]);
-            if (SEASON3B::IsPress(VK_LBUTTON))
-            {
-                int iSourceIndex = pPickedItem->GetSourceLinealPos();
-                int iTargetIndex = pPickedItem->GetTargetLinealPos(m_pNewInventoryCtrl);
-                if (iTargetIndex != -1 && m_pNewInventoryCtrl->CanMove(iTargetIndex, pItemObj))
-                {
-                    SendRequestEquipmentItem(STORAGE_TYPE::INVENTORY, iSourceIndex,
-                        pItemObj, iCurInventory, iTargetIndex);
-                    return true;
-                }
-            }
-        }
-        else
-        {
-            m_pNewInventoryCtrl->SetSquareColorNormal(m_fInventoryWarningColor[0], m_fInventoryWarningColor[1], m_fInventoryWarningColor[2]);
-        }
+        m_pNewInventoryCtrl->SetSquareColorNormal(m_fInventoryWarningColor[0], m_fInventoryWarningColor[1],
+                                                  m_fInventoryWarningColor[2]);
+        return false;
     }
-    return false;
+
+    m_pNewInventoryCtrl->SetSquareColorNormal(m_fInventoryColor[0], m_fInventoryColor[1], m_fInventoryColor[2]);
+    if (!SEASON3B::IsRelease(VK_LBUTTON))
+        return false;
+
+    const auto move =
+        UI::Items::Placement::FindHeldItemMove(m_pNewInventoryCtrl, g_MixRecipeMgr.GetMixInventoryEquipmentIndex());
+    return move && UI::Items::Placement::SendHeldItemMove(*move);
+}
+
+bool CNewUIMixInventory::AcceptsHeldItem(CNewUIPickedItem* pPickedItem)
+{
+    if (pPickedItem->GetOwnerInventory() == m_pNewInventoryCtrl)
+        return true;
+    return GetMixState() == MIX_READY && g_MixRecipeMgr.IsMixSource(pPickedItem->GetItem());
 }
 
 // Direction-agnostic core of the right-click moves: pick the item under the
@@ -980,42 +946,12 @@ bool CNewUIMixInventory::InventoryProcess()
 bool CNewUIMixInventory::AutoMoveItem(CNewUIInventoryCtrl* srcCtrl, STORAGE_TYPE srcType,
     CNewUIInventoryCtrl* dstCtrl, STORAGE_TYPE dstType, bool requireMixSource)
 {
-    if (CNewUIInventoryCtrl::GetPickedItem())
+    if (GetMixState() != MIX_READY)
         return false;
 
-    if (srcCtrl == nullptr || dstCtrl == nullptr || GetMixState() != MIX_READY)
-        return false;
-
-    ITEM* pItemObj = srcCtrl->FindItemAtPt(MouseX, MouseY);
-    if (pItemObj == nullptr)
-        return false;
-
-    if (requireMixSource && !g_MixRecipeMgr.IsMixSource(pItemObj))
-        return false;
-
-    const ITEM_ATTRIBUTE* pItemAttr = &ItemAttribute[pItemObj->Type];
-    const int iTargetIndex = dstCtrl->FindEmptySlot(pItemAttr->Width, pItemAttr->Height);
-    if (iTargetIndex < 0 || !dstCtrl->CanMove(iTargetIndex, pItemObj))
-        return false;
-
-    if (!CNewUIInventoryCtrl::CreatePickedItem(srcCtrl, pItemObj))
-        return false;
-
-    CNewUIPickedItem* pPickedItem = CNewUIInventoryCtrl::GetPickedItem();
-    if (pPickedItem == nullptr)
-        return false;
-
-    srcCtrl->RemoveItem(pItemObj);
-    pPickedItem->HidePickedItem();
-
-    if (!SendRequestEquipmentItem(srcType, pPickedItem->GetSourceLinealPos(), pItemObj, dstType, iTargetIndex))
-    {
-        CNewUIInventoryCtrl::BackupPickedItem();
-        return false;
-    }
-
-    PlayBuffer(SOUND_GET_ITEM01);
-    return true;
+    return UI::Items::Placement::AutoMoveItemAtCursor(
+        srcCtrl, srcType, dstCtrl, dstType,
+        [requireMixSource](ITEM* item) { return !requireMixSource || g_MixRecipeMgr.IsMixSource(item); });
 }
 
 bool CNewUIMixInventory::ProcessMyInvenItemAutoMove(CNewUIInventoryCtrl* sourceCtrl)
