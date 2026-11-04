@@ -25,6 +25,10 @@ constexpr const char* NameKey = "name";
 constexpr const char* KindKey = "kind";
 constexpr const char* ModelKey = "model";
 constexpr const char* AttacksKey = "attacks";
+constexpr const char* MapVariantsKey = "mapVariants";
+constexpr const char* SoundSetKey = "soundSet";
+constexpr const char* RandomVariantsKey = "randomVariants";
+constexpr const char* MapsKey = "maps";
 constexpr const char* MonsterSkillsKey = "monsterSkills";
 constexpr const char* SkillsKey = "skills";
 constexpr const char* OtherwiseKey = "otherwise";
@@ -33,6 +37,8 @@ constexpr const char* ClearSkillKey = "clearSkill";
 constexpr const char* SoundKey = "sound";
 constexpr const char* SoundAtMonsterKey = "soundAtMonster";
 constexpr const char* NoAnimationName = "none";
+// `otherwise`'s value for the generic pattern (Q-MN69).
+constexpr const char* GenericPatternName = "generic";
 // The skill numbers the packets carry (a WORD; 65535 is "no skill").
 constexpr long long MaxSkillNumber = 65534;
 
@@ -134,6 +140,85 @@ bool ReadModel(const OrderedJson& json, int number, std::string& model, IssueLis
     return true;
 }
 
+// The sound set the monster plays (Q-MN78); empty when the entry names none.
+// Whether the set exists is checked with the sets (MonsterSoundValidation.h).
+bool ReadSoundSet(const OrderedJson& json, const std::string& field, int number, std::string& soundSet,
+                  IssueList& issues)
+{
+    const auto value = json.find(SoundSetKey);
+    if (value == json.end())
+    {
+        return true;
+    }
+    if (!value->is_string() || value->get_ref<const std::string&>().empty())
+    {
+        issues.Fatal(field, "must be the name of a sound set", number);
+        return false;
+    }
+    soundSet = value->get<std::string>();
+    return true;
+}
+
+// The monster's other looks (D63, Q-MN83): each names its model, once, and
+// what it changes.
+bool ReadRandomVariants(const OrderedJson& json, const MonsterDefinition& monster,
+                        std::vector<MonsterRandomVariant>& variants, IssueList& issues)
+{
+    const auto value = json.find(RandomVariantsKey);
+    if (value == json.end())
+    {
+        return true;
+    }
+    const int number = monster.number;
+    const std::string field = MonsterField(number, RandomVariantsKey);
+    if (!value->is_array())
+    {
+        issues.Fatal(field, "must be a list of random variants", number);
+        return false;
+    }
+    bool valid = true;
+    for (size_t index = 0; index < value->size(); ++index)
+    {
+        const OrderedJson& entry = (*value)[index];
+        const std::string key = field + "[" + std::to_string(index) + "]";
+        const auto model = entry.is_object() ? entry.find(ModelKey) : entry.end();
+        if (!entry.is_object() || model == entry.end() || !model->is_string() ||
+            !FindMonsterModelReference(model->get<std::string>()))
+        {
+            issues.Fatal(key + "." + ModelKey, "must be the model of the look, as the monster's model names one",
+                         number);
+            valid = false;
+            continue;
+        }
+        MonsterRandomVariant variant;
+        variant.model = model->get<std::string>();
+        const bool repeated = variant.model == monster.model ||
+                              std::any_of(variants.begin(), variants.end(), [&](const MonsterRandomVariant& other)
+                                          { return other.model == variant.model; });
+        if (repeated)
+        {
+            issues.Fatal(key + "." + ModelKey, variant.model + " is the entry's model or another variant's", number);
+            valid = false;
+            continue;
+        }
+        std::string soundSet;
+        if (!ReadSoundSet(entry, key + "." + SoundSetKey, number, soundSet, issues))
+        {
+            valid = false;
+            continue;
+        }
+        if (!soundSet.empty())
+        {
+            variant.soundSet = std::move(soundSet);
+        }
+        Items::Json::WarnAboutUnknownKeys(entry, {ModelKey, SoundSetKey}, key + " ",
+                                          [&](const std::string& unknown, const std::string& message)
+                                          { issues.Warning(unknown, message, number); });
+        variants.push_back(std::move(variant));
+    }
+    return valid;
+}
+
 // An animation name (MonsterAnimations.h) or "none".
 std::optional<int> ReadAttackAnimation(const OrderedJson& value)
 {
@@ -154,15 +239,16 @@ std::string AttackAnimationName(int animation)
     return animation == NoAttackAnimation ? std::string(NoAnimationName) : GetMonsterAnimationName(animation);
 }
 
-bool ReadAttackEntries(const OrderedJson& json, const char* key, int number, std::vector<MonsterAttackEntry>& entries,
-                       IssueList& issues)
+// `attacksField` names the attacks in problems: "monster 459 attacks".
+bool ReadAttackEntries(const OrderedJson& json, const char* key, const std::string& attacksField, int number,
+                       std::vector<MonsterAttackEntry>& entries, IssueList& issues)
 {
     const auto value = json.find(key);
     if (value == json.end())
     {
         return true;
     }
-    const std::string field = MonsterField(number, AttacksKey) + "." + key;
+    const std::string field = attacksField + "." + key;
     if (!value->is_object())
     {
         issues.Fatal(field, "must be an object of skill numbers and animations", number);
@@ -203,22 +289,74 @@ bool ReadAttackEntries(const OrderedJson& json, const char* key, int number, std
     return valid;
 }
 
-bool ReadAttacks(const OrderedJson& json, int number, std::optional<MonsterAttacks>& attacks, IssueList& issues)
+// `otherwise`: one animation, the generic pattern, or a rotation of two or
+// more animations.
+bool ReadOtherwise(const OrderedJson& value, MonsterAttacks& attacks)
+{
+    if (value.is_string() && value.get<std::string>() == GenericPatternName)
+    {
+        attacks.otherwiseGeneric = true;
+        return true;
+    }
+    if (const std::optional<int> animation = ReadAttackAnimation(value))
+    {
+        attacks.otherwise = {*animation};
+        return true;
+    }
+    if (!value.is_array() || value.size() < 2)
+    {
+        return false;
+    }
+    std::vector<int> rotation;
+    for (const OrderedJson& entry : value)
+    {
+        const std::optional<int> animation = ReadAttackAnimation(entry);
+        if (!animation)
+        {
+            return false;
+        }
+        rotation.push_back(*animation);
+    }
+    attacks.otherwise = std::move(rotation);
+    return true;
+}
+
+OrderedJson WriteOtherwise(const MonsterAttacks& attacks)
+{
+    if (attacks.otherwiseGeneric)
+    {
+        return GenericPatternName;
+    }
+    if (!IsRotation(attacks))
+    {
+        return AttackAnimationName(attacks.otherwise.empty() ? MONSTER01_ATTACK1 : attacks.otherwise.front());
+    }
+    OrderedJson rotation = OrderedJson::array();
+    for (const int animation : attacks.otherwise)
+    {
+        rotation.push_back(AttackAnimationName(animation));
+    }
+    return rotation;
+}
+
+// The `attacks` of an entry or of a map variant; `field` names them in
+// problems.
+bool ReadAttacks(const OrderedJson& json, const std::string& field, int number, std::optional<MonsterAttacks>& attacks,
+                 IssueList& issues)
 {
     const auto value = json.find(AttacksKey);
     if (value == json.end())
     {
         return true;
     }
-    const std::string field = MonsterField(number, AttacksKey);
     if (!value->is_object())
     {
         issues.Fatal(field, "must be an object", number);
         return false;
     }
     MonsterAttacks read;
-    bool valid = ReadAttackEntries(*value, MonsterSkillsKey, number, read.monsterSkills, issues);
-    valid = ReadAttackEntries(*value, SkillsKey, number, read.skills, issues) && valid;
+    bool valid = ReadAttackEntries(*value, MonsterSkillsKey, field, number, read.monsterSkills, issues);
+    valid = ReadAttackEntries(*value, SkillsKey, field, number, read.skills, issues) && valid;
     const auto otherwise = value->find(OtherwiseKey);
     const auto random = value->find(OtherwiseRandomKey);
     if (otherwise != value->end() && random != value->end())
@@ -226,19 +364,13 @@ bool ReadAttacks(const OrderedJson& json, int number, std::optional<MonsterAttac
         issues.Fatal(field, "has otherwise or otherwiseRandom, not both", number);
         valid = false;
     }
-    if (otherwise != value->end())
+    if (otherwise != value->end() && !ReadOtherwise(*otherwise, read))
     {
-        const std::optional<int> animation = ReadAttackAnimation(*otherwise);
-        if (animation)
-        {
-            read.otherwise = *animation;
-        }
-        else
-        {
-            issues.Fatal(field + "." + OtherwiseKey, "must be an animation (attack1, shock, appear, ...) or none",
-                         number);
-            valid = false;
-        }
+        issues.Fatal(field + "." + OtherwiseKey,
+                     "must be an animation (attack1, shock, appear, ...), none, generic or a list of two or more "
+                     "animations played in turn",
+                     number);
+        valid = false;
     }
     if (random != value->end())
     {
@@ -301,6 +433,88 @@ bool ReadAttacks(const OrderedJson& json, int number, std::optional<MonsterAttac
     return valid;
 }
 
+// The maps of a map variant: one or more server maps or stages (D67).
+bool ReadVariantMaps(const OrderedJson& variant, const std::string& field, int number,
+                     std::vector<Data::Maps::MapRef>& maps, IssueList& issues)
+{
+    const std::string mapsField = field + "." + MapsKey;
+    const auto value = variant.find(MapsKey);
+    if (value == variant.end() || (value->is_array() && value->empty()))
+    {
+        issues.Fatal(mapsField, "must be a list of one or more maps", number);
+        return false;
+    }
+    return Data::Maps::ReadMapRefs(*value, mapsField, maps,
+                                   [&](const std::string& problemField, const std::string& message)
+                                   { issues.Fatal(problemField, message, number); });
+}
+
+// "map 9", "map 9 stage 2".
+std::string DescribeMapRef(const Data::Maps::MapRef& ref)
+{
+    return "map " + std::to_string(ref.map) + (ref.stage != 0 ? " stage " + std::to_string(ref.stage) : "");
+}
+
+// What the monster does differently on some maps (D62); a map in two
+// variants contradicts itself.
+bool ReadMapVariants(const OrderedJson& json, int number, std::vector<MonsterMapVariant>& variants, IssueList& issues)
+{
+    const auto value = json.find(MapVariantsKey);
+    if (value == json.end())
+    {
+        return true;
+    }
+    const std::string field = MonsterField(number, MapVariantsKey);
+    if (!value->is_array())
+    {
+        issues.Fatal(field, "must be a list of map variants", number);
+        return false;
+    }
+    bool valid = true;
+    std::vector<Data::Maps::MapRef> named;
+    for (size_t index = 0; index < value->size(); ++index)
+    {
+        const OrderedJson& entry = (*value)[index];
+        const std::string key = field + "[" + std::to_string(index) + "]";
+        if (!entry.is_object())
+        {
+            issues.Fatal(key, "must be an object with maps and the fields it changes", number);
+            valid = false;
+            continue;
+        }
+        MonsterMapVariant variant;
+        bool entryValid = ReadVariantMaps(entry, key, number, variant.maps, issues);
+        for (const Data::Maps::MapRef& ref : variant.maps)
+        {
+            const auto earlier = std::find_if(named.begin(), named.end(), [&](const Data::Maps::MapRef& other)
+                                              { return Data::Maps::Overlaps(ref, other); });
+            if (earlier != named.end())
+            {
+                issues.Fatal(key + "." + MapsKey,
+                             "names " + DescribeMapRef(ref) + ", which an earlier map variant names (" +
+                                 DescribeMapRef(*earlier) + ")",
+                             number);
+                entryValid = false;
+            }
+        }
+        named.insert(named.end(), variant.maps.begin(), variant.maps.end());
+        entryValid = ReadAttacks(entry, key + "." + AttacksKey, number, variant.attacks, issues) && entryValid;
+        if (entryValid && !variant.attacks)
+        {
+            issues.Warning(key, "changes nothing: it has no attacks", number);
+        }
+        Items::Json::WarnAboutUnknownKeys(entry, {MapsKey, AttacksKey}, key + " ",
+                                          [&](const std::string& unknown, const std::string& message)
+                                          { issues.Warning(unknown, message, number); });
+        if (entryValid)
+        {
+            variants.push_back(std::move(variant));
+        }
+        valid = entryValid && valid;
+    }
+    return valid;
+}
+
 OrderedJson WriteAttackEntries(const std::vector<MonsterAttackEntry>& entries)
 {
     OrderedJson json = OrderedJson::object();
@@ -328,7 +542,7 @@ OrderedJson WriteAttacks(const MonsterAttacks& attacks)
     }
     else
     {
-        json[OtherwiseKey] = AttackAnimationName(attacks.otherwise);
+        json[OtherwiseKey] = WriteOtherwise(attacks);
     }
     json[ClearSkillKey] = std::string(GetMonsterSkillClearName(attacks.clearSkill));
     if (!attacks.sound.empty())
@@ -359,11 +573,16 @@ std::optional<MonsterDefinition> ReadMonster(const OrderedJson& json, const std:
     bool valid = ReadNames(json, monster.number, monster.names, issues);
     valid = ReadKind(json, monster.number, monster.kind, issues) && valid;
     valid = ReadModel(json, monster.number, monster.model, issues) && valid;
-    valid = ReadAttacks(json, monster.number, monster.attacks, issues) && valid;
-    Items::Json::WarnAboutUnknownKeys(json, {NumberKey, NameKey, KindKey, ModelKey, AttacksKey},
-                                      "monster " + std::to_string(*number) + " ",
-                                      [&](const std::string& unknown, const std::string& message)
-                                      { issues.Warning(unknown, message, monster.number); });
+    valid =
+        ReadAttacks(json, MonsterField(monster.number, AttacksKey), monster.number, monster.attacks, issues) && valid;
+    valid = ReadMapVariants(json, monster.number, monster.mapVariants, issues) && valid;
+    valid = ReadSoundSet(json, MonsterField(monster.number, SoundSetKey), monster.number, monster.soundSet, issues) &&
+            valid;
+    valid = ReadRandomVariants(json, monster, monster.randomVariants, issues) && valid;
+    Items::Json::WarnAboutUnknownKeys(
+        json, {NumberKey, NameKey, KindKey, ModelKey, SoundSetKey, AttacksKey, MapVariantsKey, RandomVariantsKey},
+        "monster " + std::to_string(*number) + " ", [&](const std::string& unknown, const std::string& message)
+        { issues.Warning(unknown, message, monster.number); });
     return valid ? std::optional<MonsterDefinition>(std::move(monster)) : std::nullopt;
 }
 
@@ -377,9 +596,43 @@ OrderedJson WriteMonster(const MonsterDefinition& monster)
     {
         json[ModelKey] = monster.model;
     }
+    if (!monster.soundSet.empty())
+    {
+        json[SoundSetKey] = monster.soundSet;
+    }
     if (monster.attacks)
     {
         json[AttacksKey] = WriteAttacks(*monster.attacks);
+    }
+    if (!monster.mapVariants.empty())
+    {
+        OrderedJson variants = OrderedJson::array();
+        for (const MonsterMapVariant& variant : monster.mapVariants)
+        {
+            OrderedJson entry = OrderedJson::object();
+            entry[MapsKey] = Data::Maps::WriteMapRefs(variant.maps);
+            if (variant.attacks)
+            {
+                entry[AttacksKey] = WriteAttacks(*variant.attacks);
+            }
+            variants.push_back(std::move(entry));
+        }
+        json[MapVariantsKey] = std::move(variants);
+    }
+    if (!monster.randomVariants.empty())
+    {
+        OrderedJson variants = OrderedJson::array();
+        for (const MonsterRandomVariant& variant : monster.randomVariants)
+        {
+            OrderedJson entry = OrderedJson::object();
+            entry[ModelKey] = variant.model;
+            if (variant.soundSet)
+            {
+                entry[SoundSetKey] = *variant.soundSet;
+            }
+            variants.push_back(std::move(entry));
+        }
+        json[RandomVariantsKey] = std::move(variants);
     }
     return json;
 }
@@ -443,6 +696,9 @@ std::string WriteMonstersJson(std::span<const MonsterDefinition> monsters)
     std::string compact = Items::Json::PutObjectsOnOneLine(text, NameKey);
     compact = Items::Json::PutObjectsOnOneLine(compact, MonsterSkillsKey);
     compact = Items::Json::PutObjectsOnOneLine(compact, SkillsKey);
+    compact = Items::Json::PutListsOnOneLine(compact, OtherwiseKey);
+    compact = Items::Json::PutListsOnOneLine(compact, MapsKey);
+    compact = Items::Json::PutListEntriesOnOneLine(compact, RandomVariantsKey);
     return compact + "\n";
 }
 } // namespace Data::Monsters

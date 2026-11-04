@@ -11,6 +11,7 @@
 #include "Engine/Object/ZzzInfomation.h"
 #include "Engine/Object/ZzzInventory.h"
 #include "GameLogic/Items/CComGem.h"
+#include "GameLogic/Items/CSItemOption.h"
 #include "GameLogic/Items/ItemAddOptioninfo.h"
 #include "GameLogic/Items/ItemCategories.h"
 #include "I18N/All.h"
@@ -140,7 +141,7 @@ void ComputeRequirements(const ITEM& item, ItemTooltipValues& values)
 
 namespace Engine::Items::TooltipValues
 {
-ItemTooltipValues ComputeItemTooltipValues(const ITEM& item)
+ItemTooltipValues ComputeItemTooltipValues(const ITEM& item, TooltipValueScope scope)
 {
     ITEM_ATTRIBUTE* attribute = &ItemAttribute[item.Type];
     ItemTooltipValues values;
@@ -161,8 +162,52 @@ ItemTooltipValues ComputeItemTooltipValues(const ITEM& item)
     values.heroLevel = CharacterAttribute != nullptr ? CharacterAttribute->Level : 0;
     values.name = attribute->Name;
     values.levelPlusOne = item.Level + 1;
-    values.bundleCount = COMGEM::CalcCompiledCount(&item);
     values.excellentFlags = item.ExcellentFlags & 63;
+    values.magicDefense = item.MagicDefense;
+    values.blockRate = item.SuccessfulBlocking;
+    values.attackSpeed = attribute->WeaponSpeed;
+    values.walkSpeed = attribute->WalkSpeed;
+    values.magicPower = item.MagicPower;
+    values.durability = item.Durability;
+    for (size_t resistance = 0; resistance < values.resistances.size(); ++resistance)
+    {
+        values.resistances[resistance] = attribute->Resistance[resistance] ? item.Level + 1 : 0;
+    }
+    values.excellent = item.ExcellentFlags > 0;
+    values.ancient = item.AncientDiscriminator > 0;
+    values.socketItem = g_SocketItemMgr.IsSocketItem(&item);
+    const Data::Items::ItemDefinition* definition = g_ItemDatabase.Find(item.Type);
+    values.upperTierWings = definition != nullptr && (definition->wingTier == Data::Items::WingTier::Second ||
+                                                      definition->wingTier == Data::Items::WingTier::Third);
+    values.skillLuckOrOption = item.HasSkill || item.HasLuck || item.OptionLevel > 0;
+    wchar_t setName[64]{};
+    values.setItem = g_csItemOption.GetSetItemName(setName, item.Type, item.AncientDiscriminator);
+    // As the original client (RequireClass): an item that some class can use only from its second or third class
+    // keeps its class lines, which say so.
+    values.allClasses = std::all_of(std::begin(attribute->RequireClass), std::end(attribute->RequireClass),
+                                    [](BYTE level) { return level == 1; });
+    values.boots = type >= ITEM_BOOTS && type < ITEM_BOOTS + MAX_ITEM_INDEX;
+    values.gloves = type >= ITEM_GLOVES && type < ITEM_GLOVES + MAX_ITEM_INDEX;
+    values.expired = item.bPeriodItem && item.bExpiredPeriod;
+    if (scope == TooltipValueScope::Basics)
+    {
+        return values;
+    }
+
+    // When a timed item ends, as the tooltip has always written it.
+    if (item.bPeriodItem && !item.bExpiredPeriod && item.lExpireTime != 0)
+    {
+        _tzset();
+        const time_t expireTime = item.lExpireTime;
+        if (const tm* expire = localtime(&expireTime))
+        {
+            mu_swprintf_s(values.expireDate.data(), values.expireDate.size(), L"%d-%02d-%02d  %02d:%02d",
+                          expire->tm_year + 1900, expire->tm_mon + 1, expire->tm_mday, expire->tm_hour, expire->tm_min);
+        }
+    }
+
+    // The stat lines' values (NeedsAllTooltipValues names them).
+    values.bundleCount = COMGEM::CalcCompiledCount(&item);
     if (g_pItemAddOptioninfo != nullptr)
     {
         const ITEM_ADD_OPTION& addOption = g_pItemAddOptioninfo->GetItemAddOtioninfo(item.Type);
@@ -171,26 +216,114 @@ ItemTooltipValues ComputeItemTooltipValues(const ITEM& item)
         values.addOptionTime = addOption.m_Time;
     }
     ComputeDamage(item, values);
-
     const StrengthenCapability harmony = HarmonyBonus(item, 2);
     const int defenseBonus = harmony.SI_isSD ? harmony.SI_SD.SI_defense : 0;
     values.defense = item.Defense + defenseBonus;
     values.defenseHarmonyBonus = defenseBonus != 0;
-    values.magicDefense = item.MagicDefense;
-    values.blockRate = item.SuccessfulBlocking;
-    values.attackSpeed = attribute->WeaponSpeed;
-    values.walkSpeed = attribute->WalkSpeed;
-    values.magicPower = item.MagicPower;
-    values.durability = item.Durability;
     values.maxDurability = CalcMaxDurability(&item, attribute, item.Level);
-    for (size_t resistance = 0; resistance < values.resistances.size(); ++resistance)
-    {
-        values.resistances[resistance] = attribute->Resistance[resistance] ? item.Level + 1 : 0;
-    }
     ComputeRequirements(item, values);
-    values.excellent = item.ExcellentFlags > 0;
-    values.ancient = item.AncientDiscriminator > 0;
     return values;
+}
+
+bool NeedsAllTooltipValues(Data::Items::TooltipValue value)
+{
+    using Data::Items::TooltipValue;
+    switch (value)
+    {
+    case TooltipValue::DamageMin:
+    case TooltipValue::DamageMax:
+    case TooltipValue::Defense:
+    case TooltipValue::MaxDurability:
+    case TooltipValue::RequiredLevel:
+    case TooltipValue::RequiredStrength:
+    case TooltipValue::RequiredDexterity:
+    case TooltipValue::RequiredVitality:
+    case TooltipValue::RequiredEnergy:
+    case TooltipValue::RequiredLeadership:
+    case TooltipValue::MissingLevel:
+    case TooltipValue::MissingStrength:
+    case TooltipValue::MissingDexterity:
+    case TooltipValue::MissingVitality:
+    case TooltipValue::MissingEnergy:
+    case TooltipValue::MissingLeadership:
+    case TooltipValue::AddOptionValue1:
+    case TooltipValue::AddOptionValue2:
+    case TooltipValue::AddOptionDuration:
+    case TooltipValue::BundleCount:
+    case TooltipValue::ExpireDate:
+        return true;
+    case TooltipValue::Level:
+    case TooltipValue::MagicDefense:
+    case TooltipValue::BlockRate:
+    case TooltipValue::AttackSpeed:
+    case TooltipValue::WalkSpeed:
+    case TooltipValue::MagicPower:
+    case TooltipValue::Durability:
+    case TooltipValue::IceResistance:
+    case TooltipValue::PoisonResistance:
+    case TooltipValue::LightningResistance:
+    case TooltipValue::FireResistance:
+    case TooltipValue::EarthResistance:
+    case TooltipValue::WindResistance:
+    case TooltipValue::WaterResistance:
+    case TooltipValue::HeroLevel:
+    case TooltipValue::LevelPlusOne:
+    case TooltipValue::Name:
+    case TooltipValue::ExcellentFlags:
+    case TooltipValue::ClassName:
+    case TooltipValue::Count:
+        break;
+    }
+    return false;
+}
+
+bool NeedsAllTooltipValues(Data::Items::TooltipState state)
+{
+    using Data::Items::TooltipState;
+    switch (state)
+    {
+    case TooltipState::HasDamage:
+    case TooltipState::DamageHarmonyBonus:
+    case TooltipState::DefenseHarmonyBonus:
+    case TooltipState::StrengthReduced:
+    case TooltipState::DexterityReduced:
+    case TooltipState::StrengthRequired:
+    case TooltipState::DexterityRequired:
+        return true;
+    case TooltipState::SkillBook:
+    case TooltipState::TwoHanded:
+    case TooltipState::Excellent:
+    case TooltipState::Ancient:
+    case TooltipState::Armour:
+    case TooltipState::WizardryWeapon:
+    case TooltipState::HasDurability:
+    case TooltipState::Timed:
+    case TooltipState::HasOptions:
+    case TooltipState::SocketItem:
+    case TooltipState::UpperTierWings:
+    case TooltipState::SkillLuckOrOption:
+    case TooltipState::SetItem:
+    case TooltipState::AllClasses:
+    case TooltipState::ClassUsable:
+    case TooltipState::Boots:
+    case TooltipState::Gloves:
+    case TooltipState::Expired:
+    case TooltipState::Count:
+        break;
+    }
+    return false;
+}
+
+bool NeedsAllTooltipValues(std::span<const Data::Items::TooltipCondition> conditions)
+{
+    using Data::Items::TooltipCondition;
+    return std::any_of(
+        conditions.begin(), conditions.end(),
+        [](const TooltipCondition& condition)
+        {
+            return (condition.kind == TooltipCondition::Kind::Value && NeedsAllTooltipValues(condition.value)) ||
+                   (condition.kind == TooltipCondition::Kind::State && NeedsAllTooltipValues(condition.state));
+        });
 }
 
 std::optional<int> GetItemTooltipValue(const ItemTooltipValues& values, Data::Items::TooltipValue value)
@@ -265,6 +398,8 @@ std::optional<int> GetItemTooltipValue(const ItemTooltipValues& values, Data::It
     case TooltipValue::Level:
     case TooltipValue::AddOptionDuration:
     case TooltipValue::Name:
+    case TooltipValue::ClassName:
+    case TooltipValue::ExpireDate:
     case TooltipValue::Count:
         break;
     }
@@ -276,6 +411,14 @@ const wchar_t* GetItemTooltipText(const ItemTooltipValues& values, Data::Items::
     if (value == Data::Items::TooltipValue::Name)
     {
         return values.name != nullptr ? values.name : L"";
+    }
+    if (value == Data::Items::TooltipValue::ClassName)
+    {
+        return values.className != nullptr ? values.className : L"";
+    }
+    if (value == Data::Items::TooltipValue::ExpireDate)
+    {
+        return values.expireDate.data();
     }
     if (value == Data::Items::TooltipValue::AddOptionDuration)
     {
@@ -339,6 +482,24 @@ bool GetItemTooltipState(const ItemTooltipValues& values, Data::Items::TooltipSt
         return values.timed;
     case TooltipState::HasOptions:
         return values.hasOptions;
+    case TooltipState::SocketItem:
+        return values.socketItem;
+    case TooltipState::UpperTierWings:
+        return values.upperTierWings;
+    case TooltipState::SkillLuckOrOption:
+        return values.skillLuckOrOption;
+    case TooltipState::SetItem:
+        return values.setItem;
+    case TooltipState::AllClasses:
+        return values.allClasses;
+    case TooltipState::ClassUsable:
+        return values.classUsable;
+    case TooltipState::Boots:
+        return values.boots;
+    case TooltipState::Gloves:
+        return values.gloves;
+    case TooltipState::Expired:
+        return values.expired;
     case TooltipState::Count:
         break;
     }
@@ -356,6 +517,14 @@ std::optional<std::string> GetItemTooltipText(const ItemTooltipValues& values, s
     if (name == "name")
     {
         return values.name != nullptr ? Core::Text::ToUtf8(values.name) : std::string();
+    }
+    if (name == "className")
+    {
+        return values.className != nullptr ? Core::Text::ToUtf8(values.className) : std::string();
+    }
+    if (name == "expireDate")
+    {
+        return Core::Text::ToUtf8(values.expireDate.data());
     }
     if (name == "addOptionDuration")
     {

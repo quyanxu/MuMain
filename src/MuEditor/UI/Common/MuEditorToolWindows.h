@@ -15,7 +15,8 @@ struct ToolWindows
     bool itemRules = false;
     bool itemCategories = false;
     bool itemModel = false;
-    bool itemGlowColors = false;
+    bool colors = false;
+    bool itemTooltip = false;
     bool itemFormulas = false;
     bool itemSync = false;
     bool itemTranslations = false;
@@ -24,6 +25,7 @@ struct ToolWindows
     bool monsterModel = false;
     bool monsterPreview = false;
     bool monsterAttacks = false;
+    bool monsterSounds = false;
     bool dataChecks = false;
     bool serverList = false;
     bool skillEditor = false;

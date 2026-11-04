@@ -4,6 +4,7 @@
 #include "ItemAttributeConversion.h"
 #include "ItemDescriptionPlaceholders.h"
 #include "ItemEnumNames.h"
+#include "ItemJsonFormat.h"
 #include "ItemType.h"
 #include "Core/Text/Utf8.h"
 
@@ -74,7 +75,8 @@ struct TooltipLineOf
     std::string field;
 };
 
-// The item's description lines, then its name lines.
+// The lines ForEachItemTooltipLine walks (the description lines, the name lines, the added lines), each with its
+// field in the item file.
 std::vector<TooltipLineOf> TooltipLinesOf(const ItemDefinition& definition)
 {
     std::vector<TooltipLineOf> lines;
@@ -85,6 +87,15 @@ std::vector<TooltipLineOf> TooltipLinesOf(const ItemDefinition& definition)
     for (size_t index = 0; index < definition.nameLines.size(); ++index)
     {
         lines.push_back({&definition.nameLines[index], "nameLines[" + std::to_string(index) + "]"});
+    }
+    const std::vector<ItemTooltipLayoutAddition>& additions = definition.tooltipLayoutChanges.add;
+    for (size_t addition = 0; addition < additions.size(); ++addition)
+    {
+        for (size_t index = 0; index < additions[addition].lines.size(); ++index)
+        {
+            lines.push_back({&additions[addition].lines[index], "tooltipLayoutChanges.add[" + std::to_string(addition) +
+                                                                    "].lines[" + std::to_string(index) + "]"});
+        }
     }
     return lines;
 }
@@ -98,12 +109,6 @@ std::string TextField(const std::string& lineField, std::string_view locale)
         field += "." + std::string(locale);
     }
     return field;
-}
-
-// The field of a description line's text in one language.
-std::string DescriptionTextField(size_t line, std::string_view locale)
-{
-    return TextField("description[" + std::to_string(line) + "]", locale);
 }
 
 std::string ListPlaceholders(const std::set<std::string>& names)
@@ -315,6 +320,59 @@ void ValidatePotionPriority(const ItemDefinition& definition, std::vector<ItemDa
                  "potionPriority");
     }
 }
+
+// The highest level an item can need of a class: its third class.
+constexpr BYTE ThirdClassLevel = 3;
+
+// A class requirement above the third class: no character of that class can use the item, and its tooltip names no
+// class for it.
+void ValidateClassRequirements(const ItemDefinition& definition, std::vector<ItemDataIssue>& issues)
+{
+    const std::span<const char* const> keys = GetClassKeys();
+    for (size_t index = 0; index < definition.classRequirements.size() && index < keys.size(); ++index)
+    {
+        const BYTE level = definition.classRequirements[index];
+        if (level > ThirdClassLevel)
+        {
+            const std::string field = std::string("classRequirements.") + keys[index];
+            AddIssue(issues, ItemDataIssueSeverity::Warning, definition,
+                     "is " + std::to_string(level) +
+                         ", above the third class (3): no character of the class can use the item, and its tooltip "
+                         "names no class for it",
+                     field.c_str());
+        }
+    }
+}
+
+// The kinds the original client named by these tags in its list of items without class lines
+// (IsRequireClassRenderItem); every item of them uses a layout without the class lines.
+constexpr ItemTag KindsWithoutClassLines[] = {
+    ItemTag::ElitePotion, ItemTag::BuffScroll, ItemTag::Elixir, ItemTag::GambleItem, ItemTag::BattleOrStrengthScroll,
+    ItemTag::GuardianPet};
+
+// An item of one of those kinds whose layout has the class lines shows them in its tooltip, unlike the others: an
+// item added later of a kind that used to get it from the list. `layoutOf` gives a layout of the file as built; the
+// item's own changes can hide the class lines, but add no line with an id.
+template <typename TLayoutOf>
+void ValidateClassLines(const ItemDefinition& definition, TLayoutOf&& layoutOf, std::vector<ItemDataIssue>& issues)
+{
+    const auto kind = std::find_if(std::begin(KindsWithoutClassLines), std::end(KindsWithoutClassLines),
+                                   [&](ItemTag tag) { return definition.tags.Has(tag); });
+    if (kind == std::end(KindsWithoutClassLines))
+    {
+        return;
+    }
+    const std::vector<std::string>& hidden = definition.tooltipLayoutChanges.hide;
+    if (HasTooltipLine(layoutOf(GetItemTooltipLayoutName(definition)), ClassLinesId) &&
+        std::find(hidden.begin(), hidden.end(), ClassLinesId) == hidden.end())
+    {
+        AddIssue(issues, ItemDataIssueSeverity::Warning, definition,
+                 std::string("has the tag ") + FindEnumName(*kind) +
+                     ", but its tooltip layout has the class lines (\"" + ClassLinesId +
+                     "\"), unlike the other items of its kind (the preset \"noClassLines\")",
+                 "tooltipLayout");
+    }
+}
 } // namespace
 
 void ValidateItems(std::span<const ItemDefinition> items, std::vector<ItemDataIssue>& issues)
@@ -334,11 +392,17 @@ void ValidateItems(std::span<const ItemDefinition> items, std::vector<ItemDataIs
             issues.push_back({ItemDataIssueSeverity::Fatal, "", definition.group, definition.number, "number",
                               "the item is defined more than once"});
         }
+        // The game does not know an entry without a name; its values are checked once it has one.
+        if (definition.entryWithoutName && !definition.Exists())
+        {
+            continue;
+        }
 
         ValidateName(definition, issues);
         ValidateDescription(definition, issues);
         ValidateSlot(definition, issues);
         ValidatePotionPriority(definition, issues);
+        ValidateClassRequirements(definition, issues);
         ValidateExcellentBonus(definition, issues);
         ValidateExcellentRaisesLevel(definition, issues);
         ValidateRequirementsByLevel(definition, issues);
@@ -764,11 +828,30 @@ void ValidateDescriptionTexts(std::span<const ItemDefinition> items, const ItemT
         textNames.push_back(name);
     }
     std::set<std::string, std::less<>> used;
+    // The layouts the items name, each built once for the pass: they name one of a few.
+    std::map<std::string, std::vector<BuiltTooltipLine>, std::less<>> builtLayouts;
+    const auto layoutOf = [&](std::string_view name) -> std::span<const BuiltTooltipLine>
+    {
+        auto built = builtLayouts.find(name);
+        if (built == builtLayouts.end())
+        {
+            built = builtLayouts.emplace(std::string(name), std::vector<BuiltTooltipLine>()).first;
+            BuildTooltipLayout(tooltips, name, built->second);
+        }
+        return built->second;
+    };
     for (const TooltipLayout& layout : tooltips.layouts)
     {
         for (const TooltipLayoutLine& line : layout.lines)
         {
             used.insert(line.textName);
+        }
+        for (const TooltipLayoutAddition& addition : layout.add)
+        {
+            for (const TooltipLayoutLine& line : addition.lines)
+            {
+                used.insert(line.textName);
+            }
         }
     }
     for (const ItemDefinition& definition : items)
@@ -800,7 +883,17 @@ void ValidateDescriptionTexts(std::span<const ItemDefinition> items, const ItemT
             {
                 check(line->textName, field + ".text", false);
             }
+            if (const std::string warning = CheckClassOnlyValues(*line, tooltips); !warning.empty())
+            {
+                issues.push_back(
+                    {ItemDataIssueSeverity::Warning, "", definition.group, definition.number, field, warning});
+            }
         }
+        for (const auto& [field, message] : CheckItemTooltipLayout(tooltips, definition))
+        {
+            issues.push_back({ItemDataIssueSeverity::Fatal, "", definition.group, definition.number, field, message});
+        }
+        ValidateClassLines(definition, layoutOf, issues);
         for (const ItemLevelValues& levelValues : definition.levelValues)
         {
             for (size_t level = 0; level < levelValues.values.size(); ++level)
@@ -825,6 +918,79 @@ void ValidateDescriptionTexts(std::span<const ItemDefinition> items, const ItemT
         {
             issues.push_back({ItemDataIssueSeverity::Warning, tooltipFile, ItemDataIssue::NoItem, ItemDataIssue::NoItem,
                               "texts." + name, "neither a layout nor an item description uses this text"});
+        }
+    }
+}
+
+void ValidateGroundLabels(std::span<const ItemDefinition> items, const GroundLabelFile& labels,
+                          const std::string& labelFile, std::vector<ItemDataIssue>& issues)
+{
+    std::vector<std::string> styleNames;
+    for (const GroundLabelStyle& style : labels.styles)
+    {
+        styleNames.push_back(style.name);
+    }
+    std::set<std::string, std::less<>> used;
+    const auto unknown = [&](const std::string& name)
+    {
+        const std::string suggestion = SuggestPlaceholder(name, styleNames);
+        return "\"" + name + "\" is not a style of " + labelFile +
+               (suggestion.empty() ? "" : "; did you mean \"" + suggestion + "\"?");
+    };
+    for (size_t index = 0; index < labels.standard.size(); ++index)
+    {
+        const std::string& style = labels.standard[index].style;
+        used.insert(style);
+        if (labels.FindStyle(style) == nullptr)
+        {
+            issues.push_back({ItemDataIssueSeverity::Fatal, labelFile, ItemDataIssue::NoItem, ItemDataIssue::NoItem,
+                              "standard[" + std::to_string(index) + "].style", unknown(style)});
+        }
+    }
+    // An item's rule is never used when the rules before it take every level it holds at. The level after the last
+    // stands for Zen's amounts (its level), which only a rule without levels holds at.
+    const auto neverUsed = [](std::span<const ItemGroundLabel> rules, size_t index)
+    {
+        for (int level = 0; level <= static_cast<int>(ItemLevelCount); ++level)
+        {
+            const auto holds = [level](const ItemGroundLabel& rule) { return rule.HoldsAt(level); };
+            if (holds(rules[index]) &&
+                std::none_of(rules.begin(), rules.begin() + static_cast<std::ptrdiff_t>(index), holds))
+            {
+                return false;
+            }
+        }
+        return true;
+    };
+    for (const ItemDefinition& definition : items)
+    {
+        if (!definition.Exists())
+        {
+            continue;
+        }
+        for (size_t index = 0; index < definition.groundLabels.size(); ++index)
+        {
+            const ItemGroundLabel& label = definition.groundLabels[index];
+            const std::string field = "groundLabels[" + std::to_string(index) + "]";
+            used.insert(label.style);
+            if (labels.FindStyle(label.style) == nullptr)
+            {
+                issues.push_back({ItemDataIssueSeverity::Fatal, "", definition.group, definition.number, field,
+                                  unknown(label.style)});
+            }
+            if (neverUsed(definition.groundLabels, index))
+            {
+                issues.push_back({ItemDataIssueSeverity::Warning, "", definition.group, definition.number, field,
+                                  "is never used: the rules before it take every level it holds at"});
+            }
+        }
+    }
+    for (const std::string& name : styleNames)
+    {
+        if (!used.contains(name))
+        {
+            issues.push_back({ItemDataIssueSeverity::Warning, labelFile, ItemDataIssue::NoItem, ItemDataIssue::NoItem,
+                              "styles." + name, "neither a standard rule nor an item uses this style"});
         }
     }
 }
@@ -863,13 +1029,9 @@ void ValidateNameLocales(std::span<const ItemDefinition> items, std::span<const 
                 }
             }
         };
-        for (size_t index = 0; index < definition.description.size(); ++index)
+        for (const auto& [line, field] : TooltipLinesOf(definition))
         {
-            warnAbout(definition.description[index].text, DescriptionTextField(index, LocalizedString::NeutralLocale));
-        }
-        for (size_t index = 0; index < definition.nameLines.size(); ++index)
-        {
-            warnAbout(definition.nameLines[index].text, "nameLines[" + std::to_string(index) + "].text");
+            warnAbout(line->text, TextField(field, LocalizedString::NeutralLocale));
         }
         for (const ItemLevelValues& levelValues : definition.levelValues)
         {
@@ -891,6 +1053,29 @@ void ValidateItemModels(std::span<const ItemModelDefinition> models, std::vector
         {
             issues.push_back({ItemDataIssueSeverity::Fatal, "", model.group, model.number, "number",
                               "the model is defined more than once"});
+        }
+    }
+}
+
+void ValidateModelsHaveItemEntries(std::span<const ItemDefinition> items, std::span<const ItemModelDefinition> models,
+                                   std::vector<ItemDataIssue>& issues)
+{
+    std::set<int> entries;
+    for (const ItemDefinition& item : items)
+    {
+        if (item.HasEntry() && IsValidItemId(item.group, item.number))
+        {
+            entries.insert(MakeItemType(item.group, item.number));
+        }
+    }
+    for (const ItemModelDefinition& model : models)
+    {
+        if (model.Exists() && IsValidItemId(model.group, model.number) &&
+            !entries.contains(MakeItemType(model.group, model.number)))
+        {
+            issues.push_back({ItemDataIssueSeverity::Error, "", model.group, model.number, "number",
+                              "has a model but no entry in the item file; add {\"number\": " +
+                                  std::to_string(model.number) + "} there"});
         }
     }
 }

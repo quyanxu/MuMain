@@ -18,7 +18,8 @@ inline constexpr char ItemRequirements[] = "###ItemRequirements";
 inline constexpr char ItemRules[] = "###ItemRules";
 inline constexpr char ItemCategories[] = "###ItemCategories";
 inline constexpr char ItemModel[] = "###ItemModel";
-inline constexpr char ItemGlowColors[] = "###ItemGlowColors";
+inline constexpr char Colors[] = "###Colors";
+inline constexpr char ItemTooltip[] = "###ItemTooltip";
 inline constexpr char ItemFormulas[] = "###ItemFormulas";
 inline constexpr char ItemSync[] = "###ItemSync";
 inline constexpr char SkillEditor[] = "###SkillEditor";
@@ -32,6 +33,7 @@ inline constexpr char MonsterTranslations[] = "###MonsterTranslations";
 inline constexpr char MonsterModel[] = "###MonsterModel";
 inline constexpr char MonsterPreview[] = "###MonsterPreview";
 inline constexpr char MonsterAttacks[] = "###MonsterAttacks";
+inline constexpr char MonsterSounds[] = "###MonsterSounds";
 // Titles that are not translated: the whole title is the name.
 inline constexpr char MapEditor[] = "Map Editor";
 inline constexpr char Console[] = "Console";

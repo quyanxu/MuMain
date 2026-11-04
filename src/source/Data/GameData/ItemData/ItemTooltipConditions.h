@@ -39,6 +39,15 @@ enum class TooltipState : unsigned char
     HasDurability,
     Timed,
     HasOptions,
+    SocketItem,
+    UpperTierWings,
+    SkillLuckOrOption,
+    SetItem,
+    AllClasses,
+    ClassUsable,
+    Boots,
+    Gloves,
+    Expired,
     Count,
 };
 // The state of that name, or nothing for another name.
