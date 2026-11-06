@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.25)
 
+# As in the root CMakeLists.txt: each static library once on a link line where the linker needs no repeats.
+foreach(policy IN ITEMS CMP0156 CMP0179)
+  if(POLICY ${policy})
+    cmake_policy(SET ${policy} NEW)
+  endif()
+endforeach()
+
 project(MuMain)
 
 # Repository root (parent of this src/ directory). Defined here so all
@@ -39,7 +46,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   endif()
 endif()
 
+# SDL's ELF note check passes backslashes through a macro and expects them unescaped, as they were before CMake's
+# policy CMP0219; a CMake that knows the policy warns while it is unset.
+set(CMAKE_POLICY_DEFAULT_CMP0219 OLD)
 add_subdirectory(ThirdParty/SDL EXCLUDE_FROM_ALL)
+unset(CMAKE_POLICY_DEFAULT_CMP0219)
 set(_saved_BUILD_SHARED_LIBS "${BUILD_SHARED_LIBS}")
 set(BUILD_SHARED_LIBS OFF)
 FetchContent_MakeAvailable(SDL3_ttf)
@@ -52,6 +63,33 @@ if(NOT TARGET SDL3_ttf::SDL3_ttf OR NOT TARGET Freetype::Freetype)
 endif()
 FetchContent_MakeAvailable(SDL3_image)
 set(BUILD_SHARED_LIBS "${_saved_BUILD_SHARED_LIBS}")
+# SDL3_ttf, SDL3_image and the vendored FreeType and HarfBuzz warn under newer compilers (Clang's -Wnontrivial-memcall
+# in HarfBuzz, a redefined OS_CODE in FreeType, MSVC's C4312 in SDL3_ttf, unused parameters in SDL3_image's SVG
+# loader). Their warnings are for their authors, so they build without any. SDL3_ttf and SDL3_image set MSVC's /W2
+# themselves, which /w would override with a warning of its own (D9025), so their /W level goes first.
+foreach(third_party IN ITEMS SDL3_ttf::SDL3_ttf SDL3_image::SDL3_image Freetype::Freetype harfbuzz)
+  if(NOT TARGET ${third_party})
+    continue()
+  endif()
+  get_target_property(third_party_target ${third_party} ALIASED_TARGET)
+  if(NOT third_party_target)
+    set(third_party_target ${third_party})
+  endif()
+  get_target_property(third_party_imported ${third_party_target} IMPORTED)
+  if(third_party_imported)
+    continue()
+  endif()
+  if(MSVC)
+    get_target_property(third_party_options ${third_party_target} COMPILE_OPTIONS)
+    if(third_party_options)
+      list(FILTER third_party_options EXCLUDE REGEX "^/W[0-4]$")
+      set_property(TARGET ${third_party_target} PROPERTY COMPILE_OPTIONS ${third_party_options})
+    endif()
+    target_compile_options(${third_party_target} PRIVATE /w)
+  else()
+    target_compile_options(${third_party_target} PRIVATE -w)
+  endif()
+endforeach()
 
 # FreeType -- RmlUi's default font engine (below) requires a Freetype::Freetype target.
 # Not vendored separately, and no alias needed here either: SDL3_ttf's own CMakeLists.txt
@@ -250,6 +288,11 @@ if(ENABLE_EDITOR)
   # <-- Force C++20 for ImGui here
   target_compile_features(imgui PUBLIC cxx_std_20)
 endif()
+
+# Every target from here on is the game's own: with MU_WARNINGS_AS_ERRORS, its compiler and linker warnings are
+# errors. The third-party libraries above keep their own settings.
+set(CMAKE_COMPILE_WARNING_AS_ERROR ${MU_WARNINGS_AS_ERRORS})
+set(CMAKE_LINK_WARNING_AS_ERROR ${MU_WARNINGS_AS_ERRORS})
 
 # Engine/game code as a static library. Compile- and link-time usage
 # requirements (C++20, include paths, definitions, third-party libraries) are
@@ -705,8 +748,6 @@ target_include_directories(MuClient PUBLIC
   # after the bootstrap files moved out of source/ (issue #346).
   "${CMAKE_CURRENT_SOURCE_DIR}/source/App"
   "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/include"
-  "${miniaudio_SOURCE_DIR}"
-  "${miniaudio_SOURCE_DIR}/extras"
   "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/netcore/includes"
   "${CMAKE_BINARY_DIR}/generated"
   # stb_truetype backs the portable GDI text rasterizer (issue #462).
@@ -716,6 +757,11 @@ target_include_directories(MuClient PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty"
   $<$<BOOL:${ENABLE_EDITOR}>:${CMAKE_CURRENT_SOURCE_DIR}/MuEditor>
 )
+# MiniAudioImpl.cpp compiles miniaudio and its stb_vorbis.c; found in a system include folder, they keep their
+# warnings to themselves (Clang's -Wtautological-compare in stb_vorbis). The folder holds only the patched copy of
+# miniaudio.h and stb_vorbis.c (see the root CMakeLists.txt). The fetched tree stays off the include path: its other
+# extras include the unpatched header by relative path.
+target_include_directories(MuClient SYSTEM PUBLIC "${MU_MINIAUDIO_INCLUDE_DIR}")
 
 set_source_files_properties(
   "${CMAKE_CURRENT_SOURCE_DIR}/source/Core/Platform/Audio/MiniAudioImpl.cpp"
@@ -723,6 +769,33 @@ set_source_files_properties(
     SKIP_PRECOMPILE_HEADERS ON
     COMPILE_OPTIONS "$<$<COMPILE_LANG_AND_ID:CXX,AppleClang,Clang,GNU>:-Wno-error=tautological-compare>"
 )
+
+# stdafx.h is the precompiled header of the files that include it (as "stdafx.h" or "App/stdafx.h"): parsed once, not
+# in each of them (issue #971, step 4). A file that does not include it compiles without it, as before. The check runs
+# at configure time, so a file that adds or drops the include after that still builds, only without or with the header
+# until the next configure. CMAKE_DISABLE_PRECOMPILE_HEADERS=ON turns it off.
+# MSVC makes an inline variable with a constructor in one of these headers a forced symbol (/include) of every file
+# that uses the header, and the linker takes it from whichever object of MuClient defines it, with everything that
+# object uses. Keep such variables out of stdafx.h's headers, or a test that links MuClient without Winmain.cpp fails
+# to link (unresolved g_hWnd and the like). In a Debug build a std::string or std::wstring counts too: its debug
+# iterator support allocates.
+target_precompile_headers(MuClient PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/source/App/stdafx.h")
+set(MU_SOURCES_WITHOUT_STDAFX "")
+foreach(source IN LISTS MU_CLIENT_SOURCES)
+  file(STRINGS "${source}" stdafx_include REGEX "^[ \t]*#[ \t]*include[ \t]+\"(App/)?stdafx\\.h\"" LIMIT_COUNT 1)
+  if(NOT stdafx_include)
+    list(APPEND MU_SOURCES_WITHOUT_STDAFX "${source}")
+  endif()
+endforeach()
+set_source_files_properties(${MU_SOURCES_WITHOUT_STDAFX} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+# GCC 13 reports -Wstringop-overflow for "..." + std::to_string(n) + "..." in these two files when they use the
+# precompiled header, a false positive; GCC 15 does not, 14 was not checked. It stays a warning in them, so a local
+# build with MU_WARNINGS_AS_ERRORS=ON still builds on Ubuntu 24.04.
+set_property(SOURCE
+  "${CMAKE_CURRENT_SOURCE_DIR}/source/Data/GameData/MapData/MapRef.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/source/Data/GameData/ModelData/ModelFiles.cpp"
+  APPEND PROPERTY COMPILE_OPTIONS
+  "$<$<AND:$<CXX_COMPILER_ID:GNU>,$<VERSION_LESS:$<CXX_COMPILER_VERSION>,15>>:-Wno-error=stringop-overflow>")
 
 # Basic compile definitions, roughly mirroring the original MSVC project
 # (fine-tuning per configuration can be done later if needed.)
@@ -784,6 +857,10 @@ if (MSVC)
     urlmon
     turbojpeg-static
   )
+  # The checked-in turbojpeg-static.lib (x64 and x86) was built against the static CRT and asks for libcmt.lib,
+  # while the game and vcpkg's libraries use the DLL CRT. Without libcmt, its objects use the DLL CRT too, and the
+  # linker no longer warns about two runtimes (LNK4098).
+  target_link_options(MuClient PUBLIC /NODEFAULTLIB:libcmt.lib)
 endif()
 
 if (MSVC)
@@ -880,6 +957,24 @@ if (DOTNET_EXECUTABLE)
   mu_native_path("${DOTNET_TEMP_OUTPUT}" DOTNET_TEMP_OUTPUT_NATIVE)
   mu_native_path("${DOTNET_NUGET_DIR}" DOTNET_NUGET_DIR_NATIVE)
   mu_native_path("${DOTNET_TEMP_DIR}" DOTNET_TEMP_DIR_NATIVE)
+
+  # dotnet sets itself up on its first SDK command for a DOTNET_CLI_HOME, and on a machine that never ran dotnet,
+  # NuGet's part of that setup takes a machine-wide named mutex. The build starts several dotnet commands at once with
+  # this fresh home (the ClientLibrary publish, ResxGen), and on Linux and macOS two first runs at once can fail
+  # creating that mutex's files: "'NuGet-Migrations'. One or more system calls failed: mkdir...". One run here, before
+  # the build, leaves them nothing to set up. `dotnet --version` would not do: it skips the setup.
+  # A failed setup only means the build's steps do it themselves, as before; a status line, not a warning, because CI
+  # fails a configure on any warning, and dotnet's own output stays out of it for the same reason.
+  execute_process(
+    COMMAND ${CMAKE_COMMAND} -E env "DOTNET_CLI_HOME=${DOTNET_TEMP_DIR_NATIVE}" "${DOTNET_EXECUTABLE}" help
+    RESULT_VARIABLE _dotnet_setup_rc
+    OUTPUT_QUIET
+    ERROR_QUIET
+  )
+  if (NOT _dotnet_setup_rc EQUAL 0)
+    message(STATUS "dotnet's first-time setup failed (rc=${_dotnet_setup_rc}); the build's dotnet steps do it "
+      "themselves. `dotnet help` shows why.")
+  endif()
 
   # 2. Tell CMake to watch ALL .cs files in the ClientLibrary folder
   file(GLOB_RECURSE DOTNET_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../ClientLibrary/*.cs")
@@ -1066,6 +1161,8 @@ if (DOTNET_EXECUTABLE)
     add_custom_target(ResxGen DEPENDS ${RESX_GEN_HEADERS} ${RESX_GEN_SOURCES})
     add_dependencies(MuClient ResxGen)
     target_sources(MuClient PRIVATE ${RESX_GEN_SOURCES})
+    # The generated accessors do not include stdafx.h, so they compile without the precompiled header.
+    set_source_files_properties(${RESX_GEN_SOURCES} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
     target_include_directories(MuClient PUBLIC "${CMAKE_BINARY_DIR}/Generated")
   endif()
 
