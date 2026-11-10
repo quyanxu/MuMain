@@ -43,6 +43,7 @@
 #include "Network/Reconnect/LoginSceneReconnect.h"
 #include "Network/Reconnect/ReconnectManager.h"
 #include "Network/IncomingPacketQueue.h"
+#include "Network/EndpointForLog.h"
 #include "I18N/All.h"
 
 #include "Audio/DSPlaySound.h"
@@ -397,7 +398,9 @@ BOOL CreateSocket(const wchar_t* IpAddr, unsigned short Port)
         bResult = FALSE;
         wchar_t connectError[256];
         mu_swprintf_s(connectError, L"Cannot connect to %ls:%d. Server may be offline.", IpAddr, Port);
-        g_ErrorReport.Write(L"NET: %ls\r\n", connectError);
+        // The dialog names the address; the log, which players post, follows Network::DescribeEndpointForLog.
+        g_ErrorReport.Write(L"NET: Cannot connect to %hs. Server may be offline.\r\n",
+                            Network::DescribeEndpointForLog(mu_wchar_to_utf8(IpAddr), Port).c_str());
         g_ErrorReport.WriteCurrentTime();
         delete SocketClient;
         SocketClient = nullptr;
@@ -3638,6 +3641,24 @@ void ReceiveAttackDamageExtended(const BYTE* ReceiveBuffer)
     App::Control::Events::RecordAttackDamage(AttackPlayer, Key, Damage, ShieldDamage, DamageType);
 }
 
+namespace
+{
+constexpr int NoActionTargetKey = 0;
+
+void StartReceivedAttack(CHARACTER* character, int targetIndex)
+{
+    // A monster's attack data may pick the animation from the stored player skill.
+    SetPlayerAttack(character);
+    character->Skill = 0;
+    character->AttackTime = 1;
+    character->LastAttackEffectTime = -1;
+    character->Object.AnimationFrame = 0;
+    const bool targetFound = targetIndex != MAX_CHARACTERS_CLIENT;
+    character->TargetCharacter = targetFound ? static_cast<short>(targetIndex) : -1;
+    character->ReceivedAttackTargetUnknown = !targetFound;
+}
+} // namespace
+
 void ReceiveAction(const BYTE* ReceiveBuffer, int Size)
 {
     auto Data = (LPPRECEIVE_ACTION)ReceiveBuffer;
@@ -3650,7 +3671,8 @@ void ReceiveAction(const BYTE* ReceiveBuffer, int Size)
     int iTargetKey, iTargetIndex;
 
     iTargetKey = ((int)(Data->TargetKeyH) << 8) + Data->TargetKeyL;
-    iTargetIndex = FindCharacterIndex(iTargetKey);
+    // OpenMU sends 0 for an animation without a target; local characters can use key 0 too.
+    iTargetIndex = iTargetKey != NoActionTargetKey ? FindCharacterIndex(iTargetKey) : MAX_CHARACTERS_CLIENT;
 
     if (!c->SafeZone && c->Helper.Type == MODEL_DARK_HORSE_ITEM)
     {
@@ -3673,11 +3695,7 @@ void ReceiveAction(const BYTE* ReceiveBuffer, int Size)
         break;
     case AT_ATTACK1:
     case AT_ATTACK2:
-        SetPlayerAttack(c);
-        c->AttackTime = 1;
-        c->Object.AnimationFrame = 0;
-
-        c->TargetCharacter = HeroIndex;
+        StartReceivedAttack(c, iTargetIndex);
         if (IsMonster(c))
         {
             MUHelper::g_MuHelper.AddTarget(Key, iTargetKey == HeroKey);
