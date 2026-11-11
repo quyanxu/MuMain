@@ -8,6 +8,8 @@
 #include "Render/Terrain/ZzzLodTerrain.h"
 #include "Render/Textures/ZzzTexture.h"
 #include "Engine/Object/ZzzOpenData.h"
+#include "GameLogic/Skills/SkillHotkeyConfiguration.h"
+#include "Scenes/SceneCore.h"
 #include "Engine/Object/PlayerBodyModels.h"
 #include "Data/GameConfig/GameConfig.h"
 #include "Engine/AI/ZzzAI.h"
@@ -40,6 +42,7 @@
 #include "Data/DataHandler/LookData/LookDataHandler.h"
 #include "Data/DataHandler/MonsterData/MonsterDataHandler.h"
 #include "Data/DataHandler/MonsterData/MonsterModelLoader.h"
+#include "Data/DataHandler/BuffData/BuffStorage.h"
 #include "Data/DataHandler/MapData/MapObjectSoundStorage.h"
 #include "Data/DataHandler/SoundData/SoundEventStorage.h"
 #include "Data/DataHandler/SoundData/SoundFileStorage.h"
@@ -420,6 +423,17 @@ static void OpenMapData()
     }
 }
 
+// Loads the buffs (Data/Buffs/Buffs.json): their names, texts and the buff
+// strip's rules; errors stop the game.
+static void OpenBuffData()
+{
+    std::string errorMessage;
+    if (!Data::Buffs::LoadBuffs(errorMessage))
+    {
+        StopOnDataError("Buff data error", errorMessage);
+    }
+}
+
 // Loads the effect types (Data/Effects) and builds the effect registry from
 // their creation values; errors stop the game.
 // Reads the model file table (Data/Models/ModelFiles.json, MU_DATA_OVERLAY
@@ -662,6 +676,9 @@ void DeleteMonsters()
 
     // The model sounds without a SOUND_* id; their models load them again.
     Audio::SoundNumbers::ReleaseAll();
+
+    // A missing model file is tried once a map (Q-MN45c).
+    Data::Monsters::ModelLoader::ForgetMissingFiles();
 }
 
 // Opens a monster model from its entry in the model list
@@ -1506,27 +1523,21 @@ void OpenMacro(const wchar_t* FileName)
     fclose(fp);
 }
 
+extern BOOL g_bGameServerConnected;
+
 void SaveOptions()
 {
+    namespace Hotkeys = GameLogic::Skills::HotkeyConfiguration;
     // 0 ~ 19 skill hotkey
-    BYTE options[30]{};
+    BYTE options[Hotkeys::KeyConfigurationSize]{};
 
-    int iSkillType = -1;
-    for (int i = 0; i < 10; ++i)
+    for (int i = 0; i < Hotkeys::HotkeyCount; ++i)
     {
-        iSkillType = g_pMainFrame->GetSkillHotKey(i);
-
-        int iIndex = i * 2;
-        if (iSkillType != -1)
-        {
-            options[iIndex] = HIBYTE(CharacterAttribute->Skill[iSkillType]);
-            options[iIndex + 1] = LOBYTE(CharacterAttribute->Skill[iSkillType]);
-        }
-        else
-        {
-            options[iIndex] = 0xff;
-            options[iIndex + 1] = 0xff;
-        }
+        const int iSkillType = g_pMainFrame->GetSkillHotKey(i);
+        const auto skillNumber =
+            iSkillType != -1 ? static_cast<std::uint16_t>(CharacterAttribute->Skill[iSkillType]) : Hotkeys::FreeHotkey;
+        const auto bytes = Hotkeys::Encode(skillNumber);
+        std::copy(bytes.begin(), bytes.end(), options + i * Hotkeys::BytesPerHotkey);
     }
 
     if (g_pOption->IsAutoAttack())
@@ -1569,6 +1580,24 @@ void SaveOptions()
     options[29] = g_pMainFrame->GetItemHotKeyLevel(mu::ui::window::HOTKEY_R);
 
     SocketClient->ToGameServer()->SendSaveKeyConfiguration(options, sizeof options);
+}
+
+namespace
+{
+bool s_keyConfigurationReceived = false;
+}
+
+void SetKeyConfigurationReceived(bool received)
+{
+    s_keyConfigurationReceived = received;
+}
+
+void SaveOptionsIfInGame()
+{
+    if (SocketClient != nullptr && g_bGameServerConnected && SceneFlag == MAIN_SCENE && s_keyConfigurationReceived)
+    {
+        SaveOptions();
+    }
 }
 
 void OpenLogoSceneData()
@@ -2158,6 +2187,7 @@ void OpenBasicData(HDC hDC)
 
     OpenMonsterData();
     OpenMapData();
+    OpenBuffData();
 
     mu_swprintf(Text, L"Data\\Local\\%ls\\Quest_%ls.bmd", g_strSelectedML.c_str(), g_strSelectedML.c_str());
     g_csQuest.OpenQuestScript(Text);

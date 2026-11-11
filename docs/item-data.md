@@ -20,10 +20,10 @@ fields, so it can be exchanged with the server (see [Item Sync](#item-sync)).
 | `Tooltips/Tooltip.json` | The item tooltip's shared texts and layouts: which stat and requirement lines a tooltip shows; see [Tooltip layouts](#tooltip-layouts) |
 | `Tooltips/GroundLabels.json` | The looks of the item names on the ground: the label styles and the standard rules; see [Ground labels](#ground-labels) |
 | `Tooltips/NameCases.json` | The cases each language declines item names in, for texts that name items with a case; see [Name forms](#name-forms) |
-| `Options/*.json` | The option definitions, one file per option group (luck so far); see [Item options](#item-options) |
+| `Options/*.json` | The option definitions, one file per option group (luck and the additional option so far); see [Item options](#item-options) |
 | `Options/OptionRules.json` | Not read by the game: which option definitions an item's data gives it, for the editor; see [Option rules](#option-rules) |
 | `Tooltips/OptionTexts.json` | The texts of the options' tooltip lines; see [Item options](#item-options) |
-| `Sync/KnownDifferences.json` | Not read by the game: the differences from the server that MuEditor's Item Sync leaves unchecked; see [Item Sync](#item-sync) |
+| `Sync/KnownDifferences.json` | Not read by the game: the differences from the server that MuEditor's Item Sync marks as wrong in the client or wrong in the server; see [Item Sync](#item-sync) |
 
 The file name is only a convention; the group comes from the file content.
 
@@ -205,7 +205,7 @@ can have several tags; the file lists them in the order below.
 | `guardianPet` | Demon and Spirit of Guardian |
 | `pandaOrSkeleton` | The panda and skeleton pets and transformation rings |
 | `transformationRing` | Rings that change the character's look: a second one cannot be dragged onto a ring slot, the Kanturu entry and `/move` to Icarus refuse them, and the move window offers no Icarus with one that is not the panda or skeleton ring |
-| `jewel` | Jewels of Bless, Soul, Life, Chaos, Creation and Guardian |
+| `jewel` | Jewels of Bless, Soul, Life, Chaos, Creation and Guardian, and the ten bundles of jewels and stones (Lahap's): they play the jewel sound when picked up or dropped by a monster, and MU Helper's Jewel/Gem option picks them up |
 | `refineStone` | Lower and Higher Refine Stone |
 | `socketSeed`, `socketSphere`, `socketSeedSphere` | Socket system items |
 | `healingPotion`, `manaPotion`, `complexPotion`, `shieldPotion` | Potions the hotkeys look for; a skill without enough mana takes a mana potion and the MU Helper a healing potion. They take the one with the highest `potionPriority` first, then the highest group and number |
@@ -822,7 +822,12 @@ defense and magic defense, and how its requirements grow. It is in a folder of i
     the drop level (without the item level) when it has one. A requirement the item
     does not have stays 0;
   - `strengthPerOptionLevel`: the strength requirement grows by this much per
-    option level (also when the item has no strength requirement).
+    level the additional option counts at (also when the item has no
+    strength requirement): none when no option turns on (no option linked,
+    or an option type that picks none), the value list's last level above
+    the list, as OpenMU adds it for the option the item has. The wings'
+    options, still code, count at their option level, the Horn of
+    Dinorant's (flags, not a level) at none.
 - **Profiles** (`profiles`) write only what differs from the default. A term
   a profile writes replaces the default's as a whole. An item names its
   profile with `statProfile`; an item without one has the default.
@@ -920,10 +925,11 @@ The option groups an item can have are data, as OpenMU's item option
 definitions: the files of `Data/Items/Options` hold the definitions, one
 file per option group, and each item names the ones it can have in its
 `options` list. Which of them an item has comes from the server: its item
-data turns them on (luck by the luck flag). Luck is in data so far; the
-additional option, the excellent, wing, harmony, guardian, socket and pet
-options and the ancient bonus are still code and move into data one group
-at a time.
+data turns them on (luck by the luck flag, the additional option by its
+level). Luck and the additional option of the items that are no wings are in
+data so far; the wings' and the Horn of Dinorant's options, the excellent,
+harmony, guardian, socket and pet options and the ancient bonus are still
+code and move into data one group at a time.
 
 ```json
 {
@@ -947,8 +953,12 @@ at a time.
   definition is in is a convention: its type says what it is.
 - `type`: which part of the server's item data turns its options on, as
   OpenMU's option types: `luck` is the luck flag, with one option without
-  a number. Each option group brings its type when it moves into data. An
-  item links at most one definition of a type.
+  a number; `option` is the additional option's level (the option byte's
+  low four bits, 1 to 15; Season 6 sends 1 to 4), its options numbered
+  (`"number": 0`) by the option type the server sends in the byte's high
+  four bits, their value by that level.
+  Each option group brings its type when it moves into data. An item links
+  at most one definition of a type.
 - `displayName`: the definition's name by language, English first.
 - `openMu` and `server`: OpenMU's labels of the same definition (its GUID
   and its English name, which the exchange with the server will match by)
@@ -967,6 +977,29 @@ of adding: luck's option fills the item's luck slot with its value, which
 the price and the mixes count as before and the character window adds up
 into the [critical damage rate](#critical-damage-rate). An attribute the
 client does not compute still shows its lines and adds nothing.
+
+`Options/Option.json` holds the additional options, as OpenMU's (all with
+OpenMU's server values: a 25 % chance, one per item):
+
+| Definition | Attribute | Value by level | Lines | Items |
+|---|---|---|---|---|
+| `physicalDamageOption` | `physicalBaseDmg` | 4, 8, 12, 16 | Additional Dmg | Groups 0 to 4 but arrows, bolts and magic swords |
+| `physicalAndWizardryDamageOption` | `baseDamageBonus` | 4, 8, 12, 16 | Additional Dmg, Additional Wizardry Dmg | Magic swords |
+| `wizardryDamageOption` | `wizardryBaseDmg` | 4, 8, 12, 16 | Additional Wizardry Dmg | Group 5 but the summoner's books |
+| `curseDamageOption` | `curseBaseDmg` | 4, 8, 12, 16 | Additional Curse Spell | The summoner's books |
+| `defenseRateOption` | `defenseRatePvm` | 5, 10, 15, 20 | Additional defense rate | Shields |
+| `defenseOption` | `defenseBase` | 4, 8, 12, 16 | Additional defense | Groups 7 to 11 |
+| `jewelryHealthRecovery` | `healthRecoveryMultiplier` (per cent) | 1, 2, 3 | Automatic HP recovery | The rings 13/8, 13/9, 13/21 to 13/23 and the pendants 13/12, 13/13, 13/25 to 13/27 |
+| `ringOfMagicMana` | `maximumMana` (per cent) | 1, 2, 3 | Max mana increased by | The Ring of Magic (13/24) |
+| `pendantOfAbilityAg` | `maximumAbility` (per cent) | 1, 2, 3 | Max AG increased by | The Pendant of Ability (13/28) |
+
+The lists end where Season 6 does; a level above a list counts as its
+last value, and a longer list gives a server that sends more its own
+values. A magic sword's one option fills one slot and shows two lines. The
+other items of group 13 (the Transformation Rings, the quest items, Loch's
+Feather and the others) have no additional option, as on OpenMU. The
+wings, the capes and the Horn of Dinorant keep their additional options in
+code until they move into data.
 
 `Tooltips/OptionTexts.json` holds the lines' texts:
 
@@ -1057,10 +1090,18 @@ The game does not read it: the editor writes the items' lists from it.
   "formatVersion": 1,
   "rules": [
     {"options": [], "tags": ["ammunition"]},
-    {"options": ["luck"], "group": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]},
+    {"options": ["luck", "physicalAndWizardryDamageOption"], "tags": ["magicSword"]},
+    {"options": ["luck", "physicalDamageOption"], "group": [0, 1, 2, 3, 4]},
+    {"options": ["luck", "curseDamageOption"], "group": [5], "tags": ["summonerBook"]},
+    {"options": ["luck", "wizardryDamageOption"], "group": [5]},
+    {"options": ["luck", "defenseRateOption"], "group": [6]},
+    {"options": ["luck", "defenseOption"], "group": [7, 8, 9, 10, 11]},
     {"options": ["luck"], "group": [12], "numbers": [0, 1, 2, 3, 4, 5, 6, 41, 42, 49]},
     {"options": ["luck"], "slot": ["wings"], "wingTier": ["third"]},
-    {"options": ["luck"], "group": [13], "numbers": [30]}
+    {"options": ["luck"], "group": [13], "numbers": [30]},
+    {"options": ["jewelryHealthRecovery"], "group": [13], "numbers": [8, 9, 12, 13, 21, 22, 23, 25, 26, 27]},
+    {"options": ["ringOfMagicMana"], "group": [13], "numbers": [24]},
+    {"options": ["pendantOfAbilityAg"], "group": [13], "numbers": [28]}
   ]
 }
 ```
@@ -1073,8 +1114,9 @@ more: `numbers`, item numbers (with `group`), and a tag with `!` before it
 shipped rules give luck to the items the client gave it before: groups 0
 to 11 but arrows and bolts, the wings 12/0 to 12/6, 12/41 and 12/42, the
 Cape of Fighter (12/49), the Cape of Lord (13/30) and the third tier
-wings. A test checks that every shipped item's list is the one its rules
-give.
+wings; and the additional options of the table above. Since the first
+rule counts, a rule lists all of its items' definitions. A test checks
+that every shipped item's list is the one its rules give.
 
 **Problems** (see [Loading and errors](#loading-and-errors)). Fatal: a
 file that cannot be read or is no JSON, a missing or newer
@@ -1592,7 +1634,19 @@ shows it in the others.
   model entry and the shared model it names) and what uses it by its
   number and stays there: the source lines that name it (read from the
   sources the editor was built from; without them that part is not known)
-  and an ancient set, add option, buff or pet of the game data.
+  and an ancient set, add option, buff or pet of the game data, and the
+  monsters that wear it, with their places ("Monster 163 Chaos Castle Elf
+  wears it: weapons[0], weapons[1] (random look 1)"; see
+  [monster-data.md](monster-data.md)).
+
+  Monsters name an item by its number in their equipment, so the move
+  asks: **Move and update them** makes them name the new number too, in
+  the same undo step as the move; **Move only** leaves them at the old
+  number, where they wear nothing, and Data Checks lists them as errors
+  until another item is picked for them. Removing an item says the same of
+  its wearers. Save Items writes the references a move changed into
+  `Data/Monsters/Monsters.json` as it was last saved, with the item files
+  (all or none); the monster tools' other unsaved changes stay theirs.
 - **Item Basics**: the English name, size, slot and wing tier (*None* for
   none), two-handed, weapon kind (*By the group* takes the kind the item's
   group gives, which then follows its group, slot and classes), skill, drop
@@ -1632,7 +1686,7 @@ shows it in the others.
   the base value back; excellent and ancient items get no higher stat
   requirement from them, while excellent options still raise a level given
   by level and the option level still adds the strength its stat profile
-  gives per option level; a stat requirement whose formula takes the level
+  gives per level the additional option counts at; a stat requirement whose formula takes the level
   requirement, follows a level given by level). Below them, what the game asks at each + level
   (the `/<item name>` window shows the normal item), also as excellent,
   ancient or with an option level, while a value is still being typed. Then
@@ -2052,8 +2106,8 @@ phase 7; see the
   Changed, Removed under "From A to B", the values under "File A" and
   "File B"; an item only file A has lists file A's values), in every
   language, also one only one file has. An item a file has twice is a
-  locked row that names that file. Nothing can be applied, but a row can be
-  marked as a known difference. An import or a comparison of two files
+  locked row that names that file. Nothing can be applied or marked (the
+  marks are about the client and the server). An import or a comparison of two files
   replaces the other in the window.
 - An import lists only what differs. The lists say how much of what was
   compared differs ("Items that differ (3 of 911)"), and when nothing does,
@@ -2146,8 +2200,9 @@ number, fields with their default value left out, LF line endings.
   `profiles.scroll.requirements.energy`, …) and a profile only one side
   has. A file without formulas compares none and leaves the client's as
   they are.
-- Checked at first: what the file changes. Unchecked: removals (also of
-  a formula entry only the client has), known differences (grey) and
+- Checked at first: what the file changes, and what is marked wrong in the
+  client. Unchecked: removals (also of
+  a formula entry only the client has), what is marked wrong in the server (grey) and
   fields with a note: the size and slot of an
   item your character wears or an item window shows (they stay; such an
   item is not removed either, nor added when the client has no data for it
@@ -2158,8 +2213,12 @@ number, fields with their default value left out, LF line endings.
   unchecks one field in every changed item.
 - **Copy as Markdown** on a list's header copies the list (also a folded
   one) as a Markdown table in English: each item's group, number and name,
-  for the items that differ also the change and the number of fields. Paste
-  it into an issue, e.g. one asking OpenMU for the items it lacks.
+  for the items that differ also the change and the number of fields, and
+  the side marked wrong (*Client* or *Server*: the whole item's mark, or the
+  one all its fields have; empty otherwise; not for a comparison of two
+  files, which has no marks). Paste
+  it into an issue, e.g. one asking OpenMU for the items it lacks or to fix
+  the items marked wrong in the server.
 - **Names**: only the client's UI languages are taken from the file; a
   language the file lacks stays as it is, and no language is removed.
 - **Stat profile**: a file's profile that the item's profile rules give
@@ -2187,25 +2246,58 @@ number, fields with their default value left out, LF line endings.
   a save. With fatal problems nothing changes; they are listed and the rows
   of their items are unchecked.
 
-**Known differences** are fields and formula entries meant to differ
-between the client and the server. Ticking **Known** on a field, on an
-added or removed item or on a formula entry leaves it unchecked and grey in
-every comparison. They are kept in `Data/Items/Sync/KnownDifferences.json`
-next to the game, written when one is ticked; copy it to
+**Wrong in client** and **Wrong in server** say which side of a
+difference is wrong. Every list of an import has the two buttons: the item lists for an
+item as a whole (on a changed item: every field without a mark of its own,
+also one that differs only later), the fields of a changed item for one
+field, and the Formulas list for an entry. Marking a changed item as a
+whole takes out its fields' own marks (a new or removed item's mark stays,
+and the other way round); a field's own mark counts for that field
+instead of the item's, which stays for the others. A field shows its
+item's mark faint; it is changed on the item's row. While some fields have
+their own mark of the other side, the item's row shows its mark faint too;
+a click on a side there marks every field with it. At most one of
+them is selected; clicking the selected one again clears it, and the row
+starts as without a mark. *Wrong in client* only marks the difference: it
+leaves its box as it is, so whether Apply takes the server's value stays
+your choice; *Wrong in server* unchecks it and shows it
+grey, so the client keeps its value (checking it by hand applies it after
+all, and it is no longer grey; clearing the mark or switching to *Wrong in
+client* gives the box its default back, as a new comparison starts it). A locked field or item, and a drop level OpenMU cannot
+keep, start unchecked either way (the drop level's box still takes it). The marks count in every comparison, also after a
+new download. Apply takes out the marks of what it applied, either side's
+(on a changed item marked as a whole, once all its fields were applied):
+the client has the server's value then. An applied removal takes every
+mark of the item, so a number used again later starts without one. They are kept in `Data/Items/Sync/KnownDifferences.json`
+next to the game, read when the Item Sync window opens and written on
+every click (not while it has an entry that cannot be read: fix or remove
+the file, then close the window and open it again); copy it to
 `src/bin/Data/Items/Sync` with the item files to share it. `""` stands for
-the whole item:
+a new or removed item as a whole, `"*"` for a changed one (every field
+without a mark of its own). They are kept apart: a mark of an item only
+one side has says nothing about its values once both sides have it.
 
 ```json
 {
-  "formatVersion": 1,
+  "formatVersion": 2,
   "items": [
-    {"group": 13, "number": 4, "fields": ["", "repairable"]}
+    {"group": 13, "number": 4, "wrongInServer": [""]},
+    {"group": 13, "number": 39, "wrongInClient": ["repairable"], "wrongInServer": ["*"]},
+    {"group": 13, "number": 50, "wrongInClient": ["height"], "wrongInServer": ["width"]}
   ],
-  "formulas": [
-    "default.requirements.leadership"
-  ]
+  "formulas": {
+    "wrongInClient": [],
+    "wrongInServer": [
+      "default.requirements.leadership"
+    ]
+  }
 }
 ```
+
+A file of format version 1, from before the two buttons, lists the
+differences that were ticked **Known** (`"fields"`, and `"formulas"` as a
+list); they read as wrong in the server, as the client kept its value.
+The next click writes version 2.
 
 ### Import from bmd / Export as bmd
 

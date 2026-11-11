@@ -30,6 +30,7 @@
 #include "Data/DataHandler/ItemData/ItemDataHandler.h"
 #include "Data/DataHandler/MonsterData/MonsterDataHandler.h"
 #include "GameLogic/Monsters/MonsterNames.h"
+#include "World/GameMaps/MonsterSpawnWorld.h"
 #include "Data/GameConfig/GameConfig.h"
 #include "UI/Core/UIManager.h"
 #include "Render/Textures/ZzzOpenglUtil.h"
@@ -172,6 +173,18 @@ extern wchar_t LogInID[];
 extern bool First;
 extern int FirstTime;
 extern BOOL g_bGameServerConnected;
+extern bool LogOut;
+
+// Closing the window skips the menu exit, which is what sends the key configuration (skill and item hotkeys,
+// options, chat box); send it here while still connected. Once is enough: several close events can arrive, and the
+// menu exit has already saved before it logs out and closes the window.
+void SaveOptionsBeforeClose()
+{
+    if (!Destroy && !LogOut)
+    {
+        SaveOptionsIfInGame();
+    }
+}
 
 void CheckHack()
 {
@@ -739,6 +752,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         // Just request shutdown; the main loop exits on Destroy and the teardown
         // (sound, GL, window) runs after it. SDL owns the window now, so the GL
         // context and window must not be torn down from inside a message.
+        SaveOptionsBeforeClose();
         Destroy = true;
         if (SocketClient != nullptr)
         {
@@ -1116,7 +1130,6 @@ void HandleMouseButton(const SDL_Event& e)
             if (!MouseLButton)
                 MouseLButtonPush = true;
             MouseLButton = true;
-            Core::Input::RecordLeftMouseButtonPressEdge();
             if (e.button.clicks >= 2)
                 MouseLButtonDBClick = true;
             SetCapture(g_hWnd);
@@ -1229,8 +1242,8 @@ void HandleFocusChange(bool active)
             MouseMButtonPop = false;
             MouseMButtonPush = false;
             MouseWheel = 0;
-            Core::Input::ClearLeftMouseButtonPressEdge();
         }
+        Core::Input::ClearPressEdges();
     }
     else
     {
@@ -1411,6 +1424,17 @@ SDL_WindowID ActionWindowId(const SDL_Event& event)
     }
 }
 
+// A right press consumed by the UI still reaches the game when it targets a party card (casting a
+// support skill on that member), and a right release does while the game holds the button, so it can't stick.
+bool PassesRightButtonToGame(const SDL_Event& event)
+{
+    if (event.button.button != SDL_BUTTON_RIGHT)
+        return false;
+    if (event.type == SDL_EVENT_MOUSE_BUTTON_UP)
+        return MouseRButton;
+    return g_pPartyListWindow && g_pPartyListWindow->IsCardHoveredForMemberSkill();
+}
+
 // Physical and scripted input share UI-first routing. Scripted input owns its
 // own legacy held state; it never acquires the OS pointer or replays SDL events.
 bool RouteActionInput(SDL_Event& event, bool synthetic, bool& propagates)
@@ -1430,9 +1454,12 @@ bool RouteActionInput(SDL_Event& event, bool synthetic, bool& propagates)
     case SDL_EVENT_MOUSE_BUTTON_UP:
         if (!synthetic && event.type == SDL_EVENT_MOUSE_BUTTON_DOWN)
             Core::Input::Synthetic::CancelForPhysicalButton(event.button.button);
-        propagates = Core::Input::RouteToUi(event, g_sdlWindow);
+        propagates = Core::Input::RouteToUi(event, g_sdlWindow) || PassesRightButtonToGame(event);
         if (propagates && !synthetic)
+        {
+            Core::Input::RecordPressEdge(event);
             HandleMouseButton(event);
+        }
         return true;
     case SDL_EVENT_TEXT_INPUT:
         propagates = Core::Input::RouteToUi(event, g_sdlWindow);
@@ -1443,6 +1470,9 @@ bool RouteActionInput(SDL_Event& event, bool synthetic, bool& propagates)
         return true;
     case SDL_EVENT_KEY_DOWN:
         propagates = Core::Input::RouteToUi(event, g_sdlWindow);
+        // Scripted keys keep their own held state (Synthetic::IsKeyHeld).
+        if (propagates && !synthetic)
+            Core::Input::RecordPressEdge(event);
 #if !defined(_WIN32)
         // Physical Windows messages already handle these keys; SDL-only paths
         // (and Windows synthetic events below) must handle them here instead.
@@ -1513,11 +1543,13 @@ MSG MainLoop()
             switch (event.type)
             {
             case SDL_EVENT_QUIT:
+                SaveOptionsBeforeClose();
                 Destroy = true;
                 break;
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
                 // Titlebar X / Alt+F4: request shutdown directly on SDL's close
                 // event, without relying on a subsequent SDL_EVENT_QUIT (#535).
+                SaveOptionsBeforeClose();
                 Destroy = true;
                 break;
             case SDL_EVENT_MOUSE_MOTION:
@@ -2325,6 +2357,7 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine, int nC
     Core::Log::ReadingLanguage::Write(CurrentReadingLanguage());
     I18N::RegisterLocaleObserver(&LogUiLanguageChange, nullptr);
     g_MonsterDataHandler.SetNamesChangedCallback(&GameLogic::Monsters::Names::RefreshShownNames);
+    g_MonsterDataHandler.SetMonstersChangedCallback(&World::Monsters::ApplyLiveSetup);
 
 #ifdef _EDITOR
     // Initialize MU Editor with the live SDL GPU window.
