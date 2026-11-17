@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "Core/Platform/Quit.h"
 #include "Core/Utilities/Random.h"
 #include "App/Control/ControlTaps.h"
 #include "Audio/SoundPlaces.h"
@@ -35,7 +36,9 @@
 #include "Render/Terrain/ZzzLodTerrain.h"
 #include "Engine/Pathing/ZzzPath.h"
 #include "Engine/AI/ZzzAI.h"
+#include "Engine/Object/Movement/FlightFeel.h"
 #include "Render/Textures/ZzzTexture.h"
+#include "Render/Effects/StatDownDebuffLights.h"
 #include "Render/Effects/ZzzEffect.h"
 #include "Render/Textures/ZzzOpenglUtil.h"
 #include "Engine/Object/ZzzOpenData.h"
@@ -51,6 +54,8 @@
 #include "GameLogic/Events/MatchEvent.h"
 #include "GameLogic/Monsters/MonsterAttackPlay.h"
 #include "GameLogic/Monsters/MonsterFacing.h"
+#include "Data/GameData/MonsterData/MonsterDatabase.h"
+#include "Data/GameData/MonsterData/MonsterSetup.h"
 #include "GameLogic/Monsters/MonsterSetupApply.h"
 #include "World/GameMaps/MonsterSpawnWorld.h"
 #include "Engine/AI/GOBoid.h"
@@ -67,6 +72,8 @@
 #include "GameLogic/Items/InventoryUtils.h"
 #include "UI/Inventory/InventoryContents.h"
 #include "GameLogic/Commands/ChatCommandCatalog.h"
+#include "GameLogic/Warps/ServerWarpList.h"
+#include "Network/MoveCommandData.h"
 #include "GameLogic/Events/Cinematic/CDirection.h"
 #include "Character/CSParts.h"
 #include "Engine/Physics/PhysicsManager.h"
@@ -122,6 +129,10 @@ using namespace mu::ui::window;
 #include "Network/Server/ServerListManager.h"
 #include "Network/Server/ServerMessageTexts.h"
 #include "Network/Server/GuildRelationshipRequest.h"
+#include "Network/Server/GuildRelationshipCodes.h"
+#include "Network/Server/GuildRelationshipResult.h"
+#include "Guild/GuildRelationshipResultText.h"
+#include "Network/Server/RemoveAllianceGuildResult.h"
 #include "GameLogic/Items/ItemCategories.h"
 #include "Data/GameData/ItemData/ItemModelSlots.h"
 #include "GameLogic/Skills/SkillHotkeyConfiguration.h"
@@ -391,53 +402,79 @@ bool IsGameServerPort(unsigned short Port)
     return Port > 0xADFF || Port < 0xAD00;
 }
 
-BOOL CreateSocket(const wchar_t* IpAddr, unsigned short Port)
+namespace
 {
-    BOOL bResult = TRUE;
-    g_ConsoleDebug->Write(MCD_NORMAL, L"[Connect to Server] ip address = %ls, port = %d", IpAddr, Port);
+// Where SocketClient connects to: for the message when it can't, and for the auto-reconnect once a game server
+// greets it.
+struct ConnectAttempt
+{
+    std::wstring host;
+    unsigned short port = 0;
+    bool serverPick = false; // a game server the connect server sent the client to
+};
+ConnectAttempt s_connectAttempt;
 
-    const bool isEncrypted = IsGameServerPort(Port);
-    SocketClient = new Connection(MU_C16(IpAddr), Port, isEncrypted, &HandleIncomingPacket);
-    if (!SocketClient->IsConnected())
+void ReportConnectFailure(const ConnectAttempt& attempt)
+{
+    wchar_t connectError[256];
+    mu_swprintf_s(connectError, L"Cannot connect to %ls:%d. Server may be offline.", attempt.host.c_str(),
+                  attempt.port);
+    // The dialog names the address; the log, which players post, follows Network::DescribeEndpointForLog.
+    g_ErrorReport.Write(L"NET: Cannot connect to %hs. Server may be offline.\r\n",
+                        Network::DescribeEndpointForLog(mu_wchar_to_utf8(attempt.host.c_str()), attempt.port).c_str());
+    g_ErrorReport.WriteCurrentTime();
+
+    // While auto-reconnecting we probe the server repeatedly; the reconnect
+    // dialog already shows the status, so don't stack "server lost" popups.
+    // On the login screen LoginSceneReconnect says it with its Reconnect / Exit message.
+    if (!ReconnectManager::Instance().IsActive() && SceneFlag != LOG_IN_SCENE)
     {
-        bResult = FALSE;
-        wchar_t connectError[256];
-        mu_swprintf_s(connectError, L"Cannot connect to %ls:%d. Server may be offline.", IpAddr, Port);
-        // The dialog names the address; the log, which players post, follows Network::DescribeEndpointForLog.
-        g_ErrorReport.Write(L"NET: Cannot connect to %hs. Server may be offline.\r\n",
-                            Network::DescribeEndpointForLog(mu_wchar_to_utf8(IpAddr), Port).c_str());
-        g_ErrorReport.WriteCurrentTime();
-        delete SocketClient;
-        SocketClient = nullptr;
-
-        // While auto-reconnecting we probe the server repeatedly; the reconnect
-        // dialog already shows the status, so don't stack "server lost" popups.
-        // On the login screen LoginSceneReconnect says it with its Reconnect / Exit message.
-        if (!ReconnectManager::Instance().IsActive() && SceneFlag != LOG_IN_SCENE)
+        static bool connectErrorDisplayed = false;
+        if (!connectErrorDisplayed)
         {
-            static bool connectErrorDisplayed = false;
-            if (!connectErrorDisplayed)
-            {
-                connectErrorDisplayed = true;
-                MessageBoxW(nullptr, connectError, L"Connection Error", MB_ICONERROR | MB_OK);
-            }
+            connectErrorDisplayed = true;
+            Core::Platform::ShowError("Connection Error", mu_wchar_to_utf8(connectError));
         }
     }
-    else if (isEncrypted)
+}
+} // namespace
+
+BOOL CreateSocket(const wchar_t* IpAddr, unsigned short Port)
+{
+    g_ConsoleDebug->Write(MCD_NORMAL, L"[Connect to Server] ip address = %ls, port = %d", IpAddr, Port);
+
+    s_connectAttempt = ConnectAttempt{IpAddr, Port};
+    SocketClient = new Connection(MU_C16(IpAddr), Port, IsGameServerPort(Port), &HandleIncomingPacket);
+    // Only a connect that couldn't even start fails here; one the server refuses closes later (FinishFailedConnect).
+    if (SocketClient->FailedToOpen())
     {
-        // Remember the address we actually connected to so auto-reconnect can
-        // probe it directly. Only cache game-server endpoints: a reconnect
-        // re-runs the login/character/join sequence, which the connect server
-        // can't answer. The connect server is the only unencrypted endpoint
-        // (see the port heuristic above), so caching when isEncrypted captures
-        // both the redirected game server (ReceiveServerConnect), a map-server
-        // change, and a direct game-server connection (where ReceiveServerConnect
-        // never runs), while skipping the connect server that would otherwise
-        // poison the cache and break reconnection (issue #68).
-        ReconnectManager::Instance().CacheServer(IpAddr, Port);
+        ReportConnectFailure(s_connectAttempt);
+        delete SocketClient;
+        SocketClient = nullptr;
+        return FALSE;
     }
 
-    return bResult;
+    return TRUE;
+}
+
+std::unique_ptr<Connection> OpenConnectionForLater(const wchar_t* IpAddr, unsigned short Port)
+{
+    return std::make_unique<Connection>(MU_C16(IpAddr), Port, IsGameServerPort(Port), &HandleIncomingPacket,
+                                        /*startReceiving=*/false);
+}
+
+bool FinishFailedConnect()
+{
+    ReportConnectFailure(s_connectAttempt);
+    DeleteSocket();
+    if (s_connectAttempt.serverPick && SceneFlag == LOG_IN_SCENE)
+    {
+        // The connect server still lists a game server that is down.
+        LoginSceneReconnect::Instance().OnServerUnreachable(LoginServer::Game);
+        return true;
+    }
+
+    return false;
 }
 
 void DeleteSocket()
@@ -453,7 +490,7 @@ wchar_t LogInID[MAX_USERNAME_SIZE + 1] = {
     0,
 };
 
-BOOL ConnectForLogin(const wchar_t* IpAddr, unsigned short Port)
+BOOL ConnectForLogin(const wchar_t* IpAddr, unsigned short Port, std::unique_ptr<Connection> opened)
 {
     DeleteSocket();
     LogIn = 0;
@@ -462,7 +499,13 @@ BOOL ConnectForLogin(const wchar_t* IpAddr, unsigned short Port)
     // Game server packets (CheckHack's ping, the logout on quit) go out only while a
     // game server is connected; the connect server doesn't know them.
     g_bGameServerConnected = FALSE;
-    if (!CreateSocket(IpAddr, Port))
+    if (opened)
+    {
+        s_connectAttempt = ConnectAttempt{IpAddr, Port};
+        SocketClient = opened.release();
+        SocketClient->StartReceiving();
+    }
+    else if (!CreateSocket(IpAddr, Port))
     {
         return FALSE;
     }
@@ -586,6 +629,7 @@ void ReceiveServerConnect(const BYTE* ReceiveBuffer)
         LoginSceneReconnect::Instance().OnServerUnreachable(LoginServer::Game);
         return;
     }
+    s_connectAttempt.serverPick = true;
 
     g_bGameServerConnected = TRUE;
 
@@ -604,6 +648,14 @@ void ReceiveJoinServer(const BYTE* ReceiveBuffer)
 {
     auto Data2 = (LPPRECEIVE_JOIN_SERVER)ReceiveBuffer;
     mu::log::Get("network")->info("NET: Login response result=0x{:02X}", Data2->Result);
+
+    // A game server answered, so auto-reconnect can come back to it. Only game servers: a reconnect re-runs the
+    // login/character/join sequence, which the connect server can't answer. Cached on its greeting,
+    // not when connecting, so a server that couldn't be reached never replaces the last good one.
+    if (IsGameServerPort(s_connectAttempt.port))
+    {
+        ReconnectManager::Instance().CacheServer(s_connectAttempt.host.c_str(), s_connectAttempt.port);
+    }
 
     // A login may follow: the server let the client in, and the client is new enough.
     bool readyForLogin = false;
@@ -1010,6 +1062,9 @@ void InitGame()
     UI::Chat::ResetLogFilter();
 
     UI::Guild::ClearNotices();
+
+    // A warp list of the previous server doesn't apply to the next one; it sends its own, if any.
+    SEASON3B::CMoveCommandData::GetInstance()->RestoreDataFileWarpList();
 }
 
 BOOL ReceiveLogOut(const BYTE* ReceiveBuffer, BOOL bEncrypted)
@@ -1023,7 +1078,7 @@ BOOL ReceiveLogOut(const BYTE* ReceiveBuffer, BOOL bEncrypted)
         memset(GuildMark[MARK_EDIT].Mark, 0, sizeof(GuildMark[MARK_EDIT].Mark));
         memset(GuildMark[MARK_EDIT].GuildName, 0, sizeof(GuildMark[MARK_EDIT].GuildName));
         SelectMarkColor = 0;
-        PostMessage(g_hWnd, WM_DESTROY, 0, 0);
+        Core::Platform::RequestQuit();
         break;
     case 1:
         App::Control::Events::RecordDisconnected("the session went back to the character list");
@@ -2195,6 +2250,9 @@ void ReceiveMovePosition(const BYTE* ReceiveBuffer)
     c->Path.PathNum = 0;
     c->Path.CurrentPath = 0;
     c->Path.CurrentPathFloat = 0;
+    // It slides to the server's tile (PushingCharacter) from where it is drawn, without the sideways shift of a flying
+    // bank.
+    Engine::Characters::ForgetFlightPivotShift(c);
     SetPlayerStop(c);
 }
 
@@ -2224,6 +2282,7 @@ BOOL ReceiveTeleport(const BYTE* ReceiveBuffer, BOOL bEncrypted)
     OBJECT* o = &Hero->Object;
     o->Position[0] = ((float)(Hero->PositionX) + 0.5f) * TERRAIN_SCALE;
     o->Position[1] = ((float)(Hero->PositionY) + 0.5f) * TERRAIN_SCALE;
+    Engine::Characters::ForgetFlightPivotShift(Hero);
 
     if (gMapManager.WorldActive == -1 || Hero->Helper.Type != MODEL_HORN_OF_DINORANT || Hero->SafeZone)
     {
@@ -3536,16 +3595,28 @@ void ReceiveAction(const BYTE* ReceiveBuffer, int Size)
     }
     // if(c->Helper.Type == MODEL_HELPER+37) return;
 
-    c->Object.Angle[2] = ((float)(Data->Angle) - 1.f) * 45.f;
+    const float angle = ((float)(Data->Angle) - 1.f) * 45.f;
+    // Standing, another character turns toward the new direction with its feet stepping around; any other action
+    // (an attack, a skill) faces it at once.
+    const bool standing = Data->Action == AT_STAND1 || Data->Action == AT_STAND2;
+    if (!standing || c == Hero)
+    {
+        c->Object.Angle[2] = angle;
+    }
     c->Movement = false;
 
     c->Object.Position[0] = c->TargetX * TERRAIN_SCALE + TERRAIN_SCALE * 0.5f;
     c->Object.Position[1] = c->TargetY * TERRAIN_SCALE + TERRAIN_SCALE * 0.5f;
+    Engine::Characters::ForgetFlightPivotShift(c);
     switch (Data->Action)
     {
     case AT_STAND1:
     case AT_STAND2:
         SetPlayerStop(c);
+        if (c != Hero)
+        {
+            StartStandingTurn(c, angle);
+        }
         break;
     case AT_ATTACK1:
     case AT_ATTACK2:
@@ -3770,9 +3841,13 @@ void ReceiveSkillStatus(const BYTE* ReceiveBuffer)
         {
             // Shown already (a monster's spawn buff): the server's now too.
             GameLogic::Monsters::Setup::NoteServerBuff(*o, static_cast<int>(bufftype), true);
-            if ((o->Type >= MODEL_CRYWOLF_ALTAR1 && o->Type <= MODEL_CRYWOLF_ALTAR5) || o->Type == MODEL_SMITH ||
-                o->Type == MODEL_NPC_SERBIS || o->Type == MODEL_MERCHANT_MAN || o->Type == MODEL_STORAGE ||
-                o->Type == MODEL_NPC_BREEDER)
+            // The altars and the Crywolf NPCs take part in the hero contract
+            // (their entries' crywolfContract).
+            const Data::Monsters::MonsterDefinition* entry = g_MonsterDatabase.Find(c->MonsterIndex);
+            if (entry != nullptr && GameLogic::Monsters::Setup::SetupWithField(
+                                        *entry, [](const Data::Monsters::MonsterSetup& setup)
+                                        { return setup.crywolfContract.has_value(); }, World::Monsters::GetSpawnWorld())
+                                        .crywolfContract.value_or(false))
             {
                 if (g_isCharacterBuff(o, eBuff_CrywolfHeroContracted))
                 {
@@ -7879,117 +7954,54 @@ void ReceiveGuildRelationShip(std::span<const BYTE> ReceiveBuffer)
     const auto request = Network::Packets::ParseGuildRelationshipRequest(ReceiveBuffer);
     if (!request)
     {
-        LogSafeCastSizeMismatch("GuildRelationshipRequest", ReceiveBuffer.size(), 7);
+        mu::log::Get("network")->warn("NET: Invalid E5 guild relationship request packet dropped ({} bytes)",
+                                      ReceiveBuffer.size());
         return;
     }
 
     UI::Guild::ShowRelationshipRequest(request->relationshipType, request->requestType, request->requesterKey);
 }
 
-void ReceiveGuildRelationShipResult(const BYTE* ReceiveBuffer)
+void ReceiveGuildRelationShipResult(std::span<const BYTE> ReceiveBuffer)
 {
-    wchar_t szTemp[MAX_GLOBAL_TEXT_STRING] = L"Invalid GuildRelationShipResult";
-    auto pData = (LPPMSG_GUILD_RELATIONSHIP_RESULT)ReceiveBuffer;
-    if (pData->byResult == 0x01)
+    const auto change = Network::Packets::ParseGuildRelationshipResult(ReceiveBuffer);
+    if (!change)
     {
-        if (pData->byRelationShipType == 0x01)
-        {
-            if (pData->byRequestType == 0x01)
-            {
-                wcscpy(szTemp, I18N::Game::GuildAllianceRegistrationIsSuccessful);
-            }
-            else if (pData->byRequestType == 0x02)
-            {
-                wcscpy(szTemp, I18N::Game::GuildAllianceWithdrawalIsSuccessful);
-            }
-            else if (pData->byRequestType == 0x10)
-            {
-                wcscpy(szTemp, I18N::Game::DisbandOfAllianceGuildOrRequest);
-            }
-        }
-        else
-        {
-            if (pData->byRequestType == 0x01)
-                wcscpy(szTemp, I18N::Game::HostileGuildIsConnected);
-            else
-                wcscpy(szTemp, I18N::Game::HostileGuildIsDisconnected);
-        }
+        mu::log::Get("network")->warn("NET: Invalid E6 guild relationship result packet dropped ({} bytes)",
+                                      ReceiveBuffer.size());
+        return;
     }
-    else if (pData->byResult == 0)
-    {
-        wcscpy(szTemp, I18N::Game::Failed);
-    }
-    else
-    {
-        switch (pData->byResult)
-        {
-        case GUILD_ANS_UNIONFAIL_BY_CASTLE:
-            wcscpy(szTemp, I18N::Game::AllianceFunctionWillBeRestrictedDueToTheCastleSiege);
-            break;
-        case GUILD_ANS_NOTEXIST_PERMISSION:
-            wcscpy(szTemp, I18N::Game::NoAuthorization);
-            break;
-        case GUILD_ANS_EXIST_RELATIONSHIP_UNION:
-            wcscpy(szTemp, I18N::Game::AllianceGuild);
-            break;
-        case GUILD_ANS_EXIST_RELATIONSHIP_RIVAL:
-            wcscpy(szTemp, I18N::Game::HostileGuild);
-            break;
-        case GUILD_ANS_EXIST_UNION:
-            wcscpy(szTemp, I18N::Game::GuildAllianceExists);
-            break;
-        case GUILD_ANS_EXIST_RIVAL:
-            wcscpy(szTemp, I18N::Game::HostileGuildExists);
-            break;
-        case GUILD_ANS_NOTEXIST_UNION:
-            wcscpy(szTemp, I18N::Game::GuildAllianceDoesNotExist);
-            break;
-        case GUILD_ANS_NOTEXIST_RIVAL:
-            wcscpy(szTemp, I18N::Game::HostileGuildDoesNotExist);
-            break;
-        case GUILD_ANS_NOT_UNION_MASTER:
-            wcscpy(szTemp, I18N::Game::NotAMasterOfGuildAlliance);
-            break;
-        case GUILD_ANS_NOT_GUILD_RIVAL:
-            wcscpy(szTemp, I18N::Game::Income);
-            break;
-        case GUILD_ANS_CANNOT_BE_UNION_MASTER_GUILD:
-            wcscpy(szTemp, I18N::Game::IncompleteRequirementsForCreatingAGuildAlliance);
-            break;
-        case GUILD_ANS_EXCEED_MAX_UNION_MEMBER:
-            wcscpy(szTemp, I18N::Game::MaximumNoOfGuildAllianceIs7);
-            break;
-        case GUILD_ANS_CANCEL_REQUEST:
-            wcscpy(szTemp, I18N::Game::RequestHasBeenCancelled);
-            break;
-#ifdef ASG_ADD_GENS_SYSTEM
-        case GUILD_ANS_UNION_MASTER_NOT_GENS:
-            wcscpy(szTemp, I18N::Game::TheAllianceMasterHasNotJoinedTheGens);
-            break;
-        case GUILD_ANS_GUILD_MASTER_NOT_GENS:
-            wcscpy(szTemp, I18N::Game::TheGuildMasterHasNotJoinedTheGens);
-            break;
-        case GUILD_ANS_UNION_MASTER_DISAGREE_GENS:
-            wcscpy(szTemp, I18N::Game::YouAreWithADifferentGensThanTheAllianceMaster);
-            break;
-#endif // ASG_ADD_GENS_SYSTEM
-        default:
-            assert(!"Packet (0xE6)");
-            break;
-        }
-    }
-    UI::Chat::PostSystem(szTemp, mu::ui::window::TYPE_SYSTEM_MESSAGE);
 
-    int nCharKey = MAKEWORD(pData->byTargetUserIndexL, pData->byTargetUserIndexH);
-    if (nCharKey == HeroKey && pData->byResult == 0x01 && pData->byRelationShipType == 0x01 &&
-        pData->byRequestType == 0x02)
+    const wchar_t* text = UI::Guild::RelationshipResultText(*change);
+    if (text == nullptr)
+    {
+        mu::log::Get("network")->warn("NET: E6 guild relationship result with unknown codes ignored (type {}, request "
+                                      "{}, result 0x{:02X})",
+                                      change->relationshipType, change->requestType, change->result);
+        return;
+    }
+    UI::Chat::PostSystem(text, mu::ui::window::TYPE_SYSTEM_MESSAGE);
+
+    namespace GR = Network::Packets::GuildRelationship;
+
+    if (change->characterKey == HeroKey && change->result == GR::Success && change->relationshipType == GR::Alliance &&
+        change->requestType == GR::Leave && Hero->GuildMarkIndex != -1)
+    {
         GuildMark[Hero->GuildMarkIndex].UnionName[0] = 0;
+    }
 }
 
-void ReceiveBanUnionGuildResult(const BYTE* ReceiveBuffer)
+void ReceiveBanUnionGuildResult(std::span<const BYTE> ReceiveBuffer)
 {
-    auto pData = (LPPMSG_BAN_UNIONGUILD)ReceiveBuffer;
-    if (pData->byResult == 0x01)
+    const auto removal = Network::Packets::ParseRemoveAllianceGuildResult(ReceiveBuffer);
+    if (!removal)
+    {
+        mu::log::Get("network")->warn("NET: Invalid EB 01 remove-alliance-guild result packet dropped ({} bytes)",
+                                      ReceiveBuffer.size());
+        return;
+    }
+
+    if (removal->succeeded)
     {
         if (UI::Guild::AllianceGuildCount() > 2)
         {
@@ -7997,7 +8009,7 @@ void ReceiveBanUnionGuildResult(const BYTE* ReceiveBuffer)
         }
         UI::Guild::ClearAllianceGuilds();
     }
-    else if (pData->byResult == 0)
+    else
     {
         UI::Chat::PostSystem(I18N::Game::Failed, mu::ui::window::TYPE_SYSTEM_MESSAGE);
     }
@@ -13800,15 +13812,20 @@ static void ProcessPacket(const BYTE* ReceiveBuffer, int32_t Size)
         ReceiveGuildRelationShip(received_span);
         break;
     case 0xE6:
-        ReceiveGuildRelationShipResult(ReceiveBuffer);
+        ReceiveGuildRelationShipResult(received_span);
         break;
     case 0xEB:
     {
-        auto Data = (LPPHEADER_DEFAULT_SUBCODE)ReceiveBuffer;
-        switch (Data->SubCode)
+        constexpr std::size_t SubCodeOffset = 3;
+        if (received_span.size() <= SubCodeOffset)
+        {
+            mu::log::Get("network")->warn("NET: EB packet without a subcode dropped");
+            break;
+        }
+        switch (received_span[SubCodeOffset])
         {
         case 0x01:
-            ReceiveBanUnionGuildResult(ReceiveBuffer);
+            ReceiveBanUnionGuildResult(received_span);
             break;
         }
     }
@@ -13925,12 +13942,24 @@ static void ProcessPacket(const BYTE* ReceiveBuffer, int32_t Size)
         break;
     case 0xF5:
     {
-        // The chat commands which are available to this player. It's only sent
-        // by servers which know the request, so an unknown sub code is no error.
+        // Messages of OpenMU for the open source client, so an unknown sub code is no error.
         const auto subcode = bIsC1C3 ? ReceiveBuffer[3] : ReceiveBuffer[4];
         if (subcode == 0x01)
         {
+            // The chat commands which are available to this player.
             GameLogic::Commands::Catalog().AddFromPacket(ReceiveBuffer, Size);
+        }
+        else if (subcode == 0x09)
+        {
+            // The warp list of the server, which replaces the one of the data files until the next connection.
+            if (const auto warps = GameLogic::Warps::ReadServerWarpList(ReceiveBuffer, Size))
+            {
+                SEASON3B::CMoveCommandData::GetInstance()->ApplyServerWarpList(*warps);
+            }
+            else
+            {
+                g_ConsoleDebug->Write(MCD_RECEIVE, L"Recv [0xF5][0x09] (too short: %d bytes)", Size);
+            }
         }
         else
         {
@@ -14768,6 +14797,12 @@ static void ProcessPacket(const BYTE* ReceiveBuffer, int32_t Size)
 
 void ProcessPacketCallback(const PacketInfo* Packet)
 {
+    if (Packet->Event != Network::ConnectionEvent::None)
+    {
+        Connection::ApplyQueuedEvent(Packet->ConnectionHandle, Packet->Event);
+        return;
+    }
+
     // By the id, not the live handle: what a server sent right before it closed the
     // connection (e.g. why it closed it) still counts.
     if (SocketClient == nullptr || Packet->ConnectionHandle != SocketClient->GetId())
@@ -15387,22 +15422,9 @@ void InsertBuffPhysicalEffect(eBuffState buff, OBJECT* o)
     }
     break;
     case eDeBuff_AttackDown:
-    {
-        vec3_t vLight;
-        Vector(1.4f, 0.2f, 0.2f, vLight);
-        CreateEffect(BITMAP_SHINY + 6, o->Position, o->Angle, vLight, 1, o, -1, 0, 0, 0, 0.5f);
-        CreateEffect(BITMAP_PIN_LIGHT, o->Position, o->Angle, vLight, 1, o, -1, 0, 0, 0, 1.f);
-    }
-    break;
-
     case eDeBuff_DefenseDown:
-    {
-        vec3_t vLight;
-        Vector(0.25f, 1.0f, 0.7f, vLight);
-        CreateEffect(BITMAP_SHINY + 6, o->Position, o->Angle, vLight, 2, o, -1, 0, 0, 0, 0.5f);
-        CreateEffect(BITMAP_PIN_LIGHT, o->Position, o->Angle, vLight, 2, o, -1, 0, 0, 0, 1.f);
-    }
-    break;
+        Render::Effects::StatDownDebuffLights::Create(o, buff);
+        break;
     case eBuff_Berserker:
     {
         vec3_t vLight[2];
@@ -15602,13 +15624,8 @@ void ClearBuffPhysicalEffect(eBuffState buff, OBJECT* o)
     break;
 
     case eDeBuff_AttackDown:
-        DeleteEffect(BITMAP_SHINY + 6, o, 1);
-        DeleteEffect(BITMAP_PIN_LIGHT, o, 1);
-        break;
-
     case eDeBuff_DefenseDown:
-        DeleteEffect(BITMAP_SHINY + 6, o, 2);
-        DeleteEffect(BITMAP_PIN_LIGHT, o, 2);
+        Render::Effects::StatDownDebuffLights::Delete(o, buff);
         break;
     case eBuff_Berserker:
     {

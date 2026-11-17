@@ -2,13 +2,13 @@
 #include "stdafx.h"
 #include "turbojpeg.h"
 #include "Render/Sprites/GlobalBitmap.h"
+#include "Core/Content/ContentStore.h"
 #include "Core/Utilities/Log/MuLogger.h"
 #include "Render/Renderer/BitmapUpload.h"
 #include "Render/Renderer/MuRenderer.h"
 #include "Render/Sprites/BitmapTextureLimits.h"
 #include "Render/Sprites/GpuUploadSkip.h"
 #include "Render/Sprites/TextureDecode.h"
-#include "GlobalBitmapPath.h"
 
 #include "Render/RmlUi/RmlPremultiply.h"
 #include "Render/Textures/AlphaTestHoles.h"
@@ -29,13 +29,11 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <future>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
-#include <system_error>
 #include <vector>
 
 namespace mu
@@ -107,25 +105,16 @@ std::unique_ptr<BITMAP_t> CreateBitmapStorage(GLuint index, const std::wstring& 
     return bitmap;
 }
 
-std::optional<TextureFileBytes> ReadTextureFile(std::ifstream input, std::wstring path, bool fromTexturePack)
+std::optional<TextureFileBytes> ReadTextureFile(const std::filesystem::path& source, std::wstring path,
+                                                bool fromTexturePack)
 {
-    // is_open, not operator bool: a stream that was never opened has no
-    // error flag set.
-    if (!input.is_open())
+    const std::optional<std::string> bytes = Content::ReadFile(source);
+    if (!bytes)
     {
         return std::nullopt;
     }
     TextureFileBytes file;
-    // One read of the whole file: istreambuf_iterator copies it a character at a time.
-    input.seekg(0, std::ios::end);
-    const std::streamoff size = input.tellg();
-    input.seekg(0, std::ios::beg);
-    if (size > 0)
-    {
-        file.bytes.resize(static_cast<std::size_t>(size));
-        input.read(reinterpret_cast<char*>(file.bytes.data()), size);
-        file.bytes.resize(static_cast<std::size_t>(input.gcount()));
-    }
+    file.bytes.assign(bytes->begin(), bytes->end());
     file.path = std::move(path);
     file.fromTexturePack = fromTexturePack;
     return file;
@@ -133,7 +122,7 @@ std::optional<TextureFileBytes> ReadTextureFile(std::ifstream input, std::wstrin
 
 std::optional<TextureFileBytes> ReadOriginal(const std::wstring& path)
 {
-    return ReadTextureFile(std::ifstream(Render::Sprites::NarrowBitmapPath(path), std::ios::binary), path, false);
+    return ReadTextureFile(path, path, false);
 }
 
 // The copy of a texture file in the active pack; nothing when no pack is
@@ -147,7 +136,7 @@ std::optional<TextureFileBytes> ReadPackCopy(const Render::Textures::TexturePack
     }
     const std::u8string utf8 = copy->u8string();
     std::wstring copyPath = mu_utf8_to_wchar(std::string(utf8.begin(), utf8.end()));
-    return ReadTextureFile(std::ifstream(*copy, std::ios::binary), std::move(copyPath), true);
+    return ReadTextureFile(*copy, std::move(copyPath), true);
 }
 
 template <typename Read> std::optional<TextureFileBytes> TimedRead(double& seconds, Read&& read)
@@ -489,6 +478,15 @@ std::optional<int> CGlobalBitmap::GetLoadWorld(GLuint uiBitmapIndex) const
 }
 #endif
 
+std::vector<GLuint> CGlobalBitmap::LoadedIndices() const
+{
+    std::vector<GLuint> indices;
+    indices.reserve(m_mapBitmap.size());
+    for (const auto& [index, bitmap] : m_mapBitmap)
+        indices.push_back(index);
+    return indices;
+}
+
 void CGlobalBitmap::UnloadAllImages()
 {
     FlushAllPending();
@@ -811,7 +809,6 @@ void CGlobalBitmap::BeginLoadBatch(unsigned decodeThreads)
         {
             m_pending->threads = decodeThreads;
         }
-        mu::BeginBitmapUploadBatch();
     }
 }
 
@@ -823,7 +820,7 @@ void CGlobalBitmap::EndLoadBatch()
     }
     const auto start = std::chrono::steady_clock::now();
     FlushAllPending();
-    mu::EndBitmapUploadBatch();
+    mu::FlushBitmapUploads();
     const std::size_t queued = m_pending->queued;
     const unsigned threads = m_pending->pool ? m_pending->pool->ThreadCount() : 0u;
     m_pending.reset();
@@ -952,8 +949,7 @@ std::size_t Render::Sprites::DecodedBytes(const TextureDecodeResult& result)
 
 bool Render::Sprites::TextureFileExists(const Render::Textures::TexturePackFiles& pack, const std::wstring& path)
 {
-    std::error_code error;
-    return pack.Find(path) != nullptr || std::filesystem::exists(Render::Sprites::NarrowBitmapPath(path), error);
+    return pack.Find(path) != nullptr || Content::Probe(path) == Content::Found::File;
 }
 
 bool CGlobalBitmap::CommitTexture(const TextureDecodeRequest& request, TextureDecodeResult&& result)
@@ -1096,9 +1092,8 @@ void CGlobalBitmap::SetTexturePack(const std::wstring& pack)
     }
 
     const std::wstring folder = TexturePack::PackFolder(pack);
-    const std::filesystem::path root = Render::Sprites::NarrowBitmapPath(folder);
-    std::error_code error;
-    if (!std::filesystem::is_directory(root, error))
+    const std::filesystem::path root(folder);
+    if (Content::Probe(root) != Content::Found::Folder)
     {
         mu::log::Get("render")->warn("Texture pack not found, using the original textures: {}",
                                      mu_wchar_to_utf8(folder.c_str()));

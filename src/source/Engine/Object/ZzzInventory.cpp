@@ -43,6 +43,7 @@
 #include "GameLogic/Items/ItemStats.h"
 #include "GameLogic/Items/TransformationRing.h"
 #include "Render/Items/ItemDisplay.h"
+#include "Render/Items/LookDrawing.h"
 #include <chrono>
 #include <cstring>
 #include "Data/GameData/ItemData/ItemModelSlots.h"
@@ -1070,8 +1071,8 @@ WORD CalcMaxDurability(const ITEM* ip, ITEM_ATTRIBUTE* p, int Level)
     {
         maxDurability += 20;
     }
-    else if (ip->ExcellentFlags > 0 && !GameLogic::Items::IsSecondOrThirdTierWing(ip) &&
-             !GameLogic::Items::IsDivineArchangelWeapon(ip))
+    // Excellent, not the Divine Archangel weapons. The Horn of Fenrir's byte is its kind, no excellent options.
+    else if (GameLogic::Items::HasExcellentOptions(*ip) && !GameLogic::Items::IsDivineArchangelWeapon(ip))
     {
         maxDurability += 15;
     }
@@ -1091,12 +1092,27 @@ std::optional<int> WriteDefinitionOptionLines(const ITEM& item, int slot, int te
     {
         return std::nullopt;
     }
-    const int value = GameLogic::Items::GetSlotOptionValue(item, *slotOption);
+    return WriteOptionLines(*slotOption->option, GameLogic::Items::GetSlotOptionValue(item, *slotOption), textNum,
+                            rowLimit);
+}
+
+int WriteOptionLines(const Data::Items::ItemOption& option, int value, int textNum, int rowLimit)
+{
+    Engine::Items::OptionLines::LineValues values;
+    values.value = value;
+    for (const Data::Items::ItemOptionTerm& term : option.value.per)
+    {
+        if (term.divisor > 0)
+        {
+            values.divisor = term.divisor;
+            break;
+        }
+    }
     const int lastRow = std::min(rowLimit, MaxTextListRows);
     int row = textNum;
-    for (const std::string& name : slotOption->option->texts)
+    for (const std::string& name : option.texts)
     {
-        if (row < lastRow && Engine::Items::OptionLines::Write(name, value, TextList[row], std::size(TextList[row])))
+        if (row < lastRow && Engine::Items::OptionLines::Write(name, values, TextList[row], std::size(TextList[row])))
         {
             TextListColor[row] = TEXT_COLOR_BLUE;
             TextBold[row] = false;
@@ -1639,7 +1655,7 @@ static std::wstring StandardItemName(const ITEM& item, int level, bool full)
     if (full && g_csItemOption.GetSetItemName(setName, item.Type, item.AncientDiscriminator))
         name = setName;
     name += ItemAttribute[item.Type].Name;
-    if (full && item.ExcellentFlags > 0)
+    if (full && GameLogic::Items::HasExcellentOptions(item))
         name = std::wstring(I18N::Game::Excellent) + L" " + name;
     if (level > 0)
         name += L" +" + std::to_wstring(level);
@@ -1653,7 +1669,7 @@ static int StandardItemNameColor(const ITEM& item, int level)
         return TEXT_COLOR_GREEN_BLUE;
     if (g_SocketItemMgr.IsSocketItem(&item))
         return TEXT_COLOR_VIOLET;
-    if (item.SpecialNum > 0 && item.ExcellentFlags > 0)
+    if (GameLogic::Items::HasExcellentOptions(item))
         return TEXT_COLOR_GREEN;
     if (level >= 7)
         return TEXT_COLOR_YELLOW;
@@ -3148,6 +3164,8 @@ constexpr float SelectedItemTurnSpeed = 0.45f;
 void RenderObjectScreen(int Type, int ItemLevel, int excellentFlags, int ancientDiscriminator, vec3_t Target,
                         int Select, bool PickUp)
 {
+    // A look's layers can be only for the inventory.
+    const Render::Items::Looks::InventoryDrawing inventory;
     int Level = ItemLevel;
     vec3_t Direction, Position;
 
