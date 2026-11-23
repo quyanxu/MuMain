@@ -163,6 +163,7 @@ mu_add_test(
         test_monster_item_references.cpp
         test_monster_json.cpp
         test_monster_list_model.cpp
+        test_monster_looks_json.cpp
         test_monster_model_files.cpp
         test_monster_model_values.cpp
         test_monster_models_json.cpp
@@ -245,6 +246,7 @@ mu_add_test(
         test_item_tooltip_text.cpp
         test_item_texts.cpp
         test_item_tooltips.cpp
+        test_skill_buff_values.cpp
         test_item_value_formulas.cpp
         ${CMAKE_SOURCE_DIR}/src/source/App/Platform/Windows/Winmain.cpp
     LINK_LIBS
@@ -359,7 +361,7 @@ target_compile_definitions(player_model_selector_tests PRIVATE
     MU_TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/src/bin/Data"
 )
 
-# Render styles as data (docs/item-data.md, "Render styles and item effects"): the look file, the layers' drawing
+# Render styles as data (docs/item-data.md, "Render styles and effects"): the look file, the layers' drawing
 # and the comparison of each moved look with its old code, on the item models of the test data.
 mu_add_test(
     NAME render_style_tests
